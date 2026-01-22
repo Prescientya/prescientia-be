@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const bcrypt = require('bcrypt');
+const { requireStudent } = require('../middlewares/auth.middleware');
 
 // ==================== STUDENTS CRUD ====================
 
@@ -75,6 +76,104 @@ router.get('/', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengambil data students',
+      error: error.message
+    });
+  }
+});
+
+// GET student profile (lengkap - user + student data)
+// HARUS DIDEFINISIKAN SEBELUM /:id AGAR TIDAK DIANGGAP SEBAGAI ID PARAMETER
+// Endpoint ini untuk mengisi menu Profile di FE
+// Memerlukan JWT token dari login siswa
+// Langsung menampilkan profil siswa yang sedang login (dari token JWT)
+router.get('/profile', requireStudent, async (req, res) => {
+  try {
+    const studentId = req.user.student_id;
+    
+    const query = `
+      SELECT 
+        s.id as student_id,
+        s.user_id,
+        s.nis,
+        s.name,
+        s.gender,
+        s.date_of_birth,
+        s.phone_number,
+        s.address,
+        s.class_id,
+        s.photo_profile,
+        s.created_at as student_created_at,
+        s.updated_at as student_updated_at,
+        u.email,
+        u.email_verified_at,
+        u.device_id,
+        u.wifi_mac,
+        u.is_active,
+        u.last_login_at,
+        u.created_at as user_created_at,
+        u.updated_at as user_updated_at,
+        c.id as class_id,
+        c.class as class_level,
+        c.major as class_major
+      FROM students s
+      INNER JOIN users u ON s.user_id = u.id
+      LEFT JOIN classes c ON s.class_id = c.id
+      WHERE s.id = $1 AND s.deleted_at IS NULL AND u.deleted_at IS NULL
+    `;
+    
+    const result = await pool.query(query, [studentId]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Profil student tidak ditemukan'
+      });
+    }
+
+    const profile = result.rows[0];
+    
+    res.json({
+      success: true,
+      message: 'Data profil student berhasil diambil',
+      data: {
+        // User Information
+        user: {
+          id: profile.user_id,
+          email: profile.email,
+          email_verified_at: profile.email_verified_at,
+          device_id: profile.device_id,
+          wifi_mac: profile.wifi_mac,
+          is_active: profile.is_active,
+          last_login_at: profile.last_login_at,
+          created_at: profile.user_created_at,
+          updated_at: profile.user_updated_at
+        },
+        // Student Information
+        student: {
+          id: profile.student_id,
+          nis: profile.nis,
+          name: profile.name,
+          gender: profile.gender,
+          date_of_birth: profile.date_of_birth,
+          phone_number: profile.phone_number,
+          address: profile.address,
+          photo_profile: profile.photo_profile,
+          created_at: profile.student_created_at,
+          updated_at: profile.student_updated_at
+        },
+        // Class Information
+        class: profile.class_id ? {
+          id: profile.class_id,
+          level: profile.class_level,
+          major: profile.class_major
+        } : null
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching student profile:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Terjadi kesalahan saat mengambil data profil student',
       error: error.message
     });
   }

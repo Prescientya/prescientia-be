@@ -10,7 +10,6 @@ const findAlphaWithoutDetailsByStudent = async (studentId) => {
     LEFT JOIN school_calendar sc ON sa.calendar_id = sc.id
     WHERE sa.student_id = $1
       AND sa.status = 'alpa'
-      AND sa.id NOT IN (SELECT attendance_id FROM student_attendance_details)
     ORDER BY date DESC
   `;
   const res = await pool.query(q, [studentId]);

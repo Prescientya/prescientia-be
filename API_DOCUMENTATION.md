@@ -357,6 +357,78 @@ GET /students?page=1&limit=10&class_id=1&name=John
 GET /students/:id
 ```
 
+### GET Student Profile (Lengkap)
+Menampilkan data profil lengkap siswa yang sedang login. Endpoint ini digunakan untuk mengisi menu Profile di FE.
+
+**Memerlukan JWT Token** dari login siswa.
+
+```
+GET /students/profile
+Headers:
+{
+  "Authorization": "Bearer <JWT_TOKEN>"
+}
+```
+
+**Penjelasan:**
+- Endpoint ini **otomatis** menampilkan profil siswa yang sedang login (berdasarkan JWT token)
+- Tidak perlu mengirimkan student_id di URL
+- Data yang ditampilkan adalah biodata lengkap siswa yang login
+
+**Response Success (200):**
+```json
+{
+  "success": true,
+  "message": "Data profil student berhasil diambil",
+  "data": {
+    "user": {
+      "id": 5,
+      "email": "budi@example.com",
+      "email_verified_at": null,
+      "device_id": "device123",
+      "wifi_mac": "00:00:00:00:00:00",
+      "is_active": true,
+      "last_login_at": "2024-01-15T10:30:00",
+      "created_at": "2024-01-01T08:00:00",
+      "updated_at": "2024-01-15T10:30:00"
+    },
+    "student": {
+      "id": 1,
+      "nis": "0012345678",
+      "name": "Budi Santoso",
+      "gender": "L",
+      "date_of_birth": "2008-05-15",
+      "phone_number": "08123456789",
+      "address": "Jalan Merdeka 123",
+      "photo_profile": "https://...",
+      "created_at": "2024-01-01T08:00:00",
+      "updated_at": "2024-01-15T10:30:00"
+    },
+    "class": {
+      "id": 1,
+      "level": 10,
+      "major": "IPA"
+    }
+  }
+}
+```
+
+**Response Error (401 - Token tidak valid/kadaluarsa):**
+```json
+{
+  "success": false,
+  "message": "Token kadaluwarsa. Silakan login kembali."
+}
+```
+
+**Response Error (404 - Profil tidak ditemukan):**
+```json
+{
+  "success": false,
+  "message": "Profil student tidak ditemukan"
+}
+```
+
 ### CREATE Student
 Note: Endpoint ini akan membuat record di tabel `users` dan tabel `students` sekaligus (transactional).
 ```

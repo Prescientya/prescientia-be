@@ -28,9 +28,11 @@ router.post('/login/siswa', async (req, res) => {
       SELECT 
         s.id as student_id, s.nis, s.name, s.gender, s.date_of_birth,
         s.phone_number, s.address, s.class_id, s.photo_profile,
-        u.id as user_id, u.email, u.password, u.is_active, u.device_id, u.wifi_mac
+        u.id as user_id, u.email, u.password, u.is_active, u.device_id, u.wifi_mac,
+        scr.role as class_role
       FROM students s
       INNER JOIN users u ON s.user_id = u.id
+      LEFT JOIN student_class_roles scr ON s.id = scr.student_id AND s.class_id = scr.class_id
       WHERE s.nis COLLATE "C" = $1 COLLATE "C" AND s.deleted_at IS NULL
     `;
 
@@ -102,6 +104,7 @@ router.post('/login/siswa', async (req, res) => {
         device_id: student.device_id,
         wifi_mac: student.wifi_mac,
         role: 'siswa',
+        class_role: student.class_role || 'pelajar',
         token // JWT for client to use in Authorization header
       }
     });
