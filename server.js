@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const redisClient = require('./config/redis');
 const authRoutes = require('./routes/auth');
 const piringRoutes = require('./routes/piring');
 const usersRoutes = require('./routes/users');
@@ -85,10 +86,12 @@ app.get('/', (req, res) => {
 // Database health check
 app.get('/health', async (req, res) => {
   const dbStatus = await testConnection();
+  const redisStatus = await redisClient.ping().then(() => true).catch(() => false);
   res.json({
     success: true,
     status: 'running',
     database: dbStatus ? 'connected' : 'disconnected',
+    redis: redisStatus ? 'connected' : 'disconnected',
     timestamp: new Date().toISOString()
   });
 });
@@ -120,6 +123,7 @@ const startServer = async () => {
       console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
       console.log('=================================');
       console.log(`\n💾 Database: ${dbInfo.rows[0].current_database}`);
+      console.log(`🔴 Redis: ${process.env.REDIS_HOST}:${process.env.REDIS_PORT}`);
       console.log('📊 Tables:');
       tablesResult.rows.forEach(row => {
         console.log(`   - ${row.table_name}`);

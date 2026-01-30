@@ -280,4 +280,142 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
+// ==================== SPECIAL ENDPOINTS ====================
+
+// GET teacher's classes with all students and their attendance status (for specific date or latest)
+router.get('/classes-with-attendance/:teacher_id', async (req, res) => {
+  try {
+    const { teacher_id } = req.params;
+    const { attendance_date } = req.query; // Format: YYYY-MM-DD (optional, if not provided use latest)
+    // Normalize attendance_date: frontend may send 'latest' or other non-date; treat as no-date
+    const attendanceDate = (attendance_date && attendance_date !== 'latest') ? attendance_date : null;
+
+    if (!teacher_id) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Teacher ID harus diisi' 
+      });
+    }
+
+    // Step 1: Get all classes taught by this teacher using teached_classes
+    const classesQuery = `
+      SELECT DISTINCT tc.class_id, c.class as class_level, c.major, c.id
+      FROM teached_classes tc
+      INNER JOIN classes c ON tc.class_id = c.id
+      WHERE tc.teacher_id = $1
+      ORDER BY c.class, c.major
+    `;
+
+    const classesResult = await pool.query(classesQuery, [teacher_id]);
+
+    if (classesResult.rows.length === 0) {
+      return res.json({
+        success: true,
+        message: 'Guru tidak mengajar di kelas manapun',
+        data: []
+      });
+    }
+
+    // Step 2: For each class, get all students with their attendance status
+    const classesWithStudents = await Promise.all(
+      classesResult.rows.map(async (classRow) => {
+        let studentQuery;
+        const params = [classRow.id];
+
+        // If attendance_date is provided, filter by that date
+        if (attendanceDate) {
+          studentQuery = `
+            SELECT 
+              s.id as student_id,
+              s.name as student_name,
+              s.nis,
+              sa.status as attendance_status,
+              sa.check_in_time,
+              sa.check_out_time,
+              sc.date as attendance_date
+            FROM student_class_roles scr
+            INNER JOIN students s ON scr.student_id = s.id
+            LEFT JOIN student_attendances sa ON s.id = sa.student_id AND sa.class_id = $1
+            LEFT JOIN school_calendar sc ON sa.calendar_id = sc.id
+            WHERE scr.class_id = $1 AND s.deleted_at IS NULL AND sc.date = $2
+            ORDER BY s.name ASC
+          `;
+          params.push(attendanceDate);
+        } else {
+          // If no date provided, get latest attendance for each student
+          studentQuery = `
+            SELECT 
+              s.id as student_id,
+              s.name as student_name,
+              s.nis,
+              (
+                SELECT sa2.status 
+                FROM student_attendances sa2 
+                WHERE sa2.student_id = s.id AND sa2.class_id = $1 
+                ORDER BY sa2.created_at DESC LIMIT 1
+              ) as attendance_status,
+              (
+                SELECT sa2.check_in_time 
+                FROM student_attendances sa2 
+                WHERE sa2.student_id = s.id AND sa2.class_id = $1 
+                ORDER BY sa2.created_at DESC LIMIT 1
+              ) as check_in_time,
+              (
+                SELECT sa2.check_out_time 
+                FROM student_attendances sa2 
+                WHERE sa2.student_id = s.id AND sa2.class_id = $1 
+                ORDER BY sa2.created_at DESC LIMIT 1
+              ) as check_out_time,
+              (
+                SELECT sc2.date 
+                FROM student_attendances sa2 
+                LEFT JOIN school_calendar sc2 ON sa2.calendar_id = sc2.id 
+                WHERE sa2.student_id = s.id AND sa2.class_id = $1 
+                ORDER BY sa2.created_at DESC LIMIT 1
+              ) as attendance_date
+            FROM student_class_roles scr
+            INNER JOIN students s ON scr.student_id = s.id
+            WHERE scr.class_id = $1 AND s.deleted_at IS NULL
+            ORDER BY s.name ASC
+          `;
+        }
+
+        const studentResult = await pool.query(studentQuery, params);
+
+        return {
+          class_id: classRow.id,
+          class_level: classRow.class_level,
+          major: classRow.major,
+          students: studentResult.rows.map(row => ({
+            student_id: row.student_id,
+            name: row.student_name,
+            nis: row.nis,
+            attendance_status: row.attendance_status || 'belum_absen',
+            check_in_time: row.check_in_time ? new Date(row.check_in_time).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : null,
+            check_out_time: row.check_out_time ? new Date(row.check_out_time).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : null,
+            attendance_date: row.attendance_date ? new Date(row.attendance_date).toISOString().split('T')[0] : null
+          }))
+        };
+      })
+    );
+
+    res.json({
+      success: true,
+      message: 'Data kelas dan absensi siswa berhasil diambil',
+      data: classesWithStudents,
+      filter: {
+        teacher_id: parseInt(teacher_id),
+        attendance_date: attendanceDate || 'latest'
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching teacher classes with attendance:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Terjadi kesalahan saat mengambil data kelas dan absensi',
+      error: error.message
+    });
+  }
+});
+
 module.exports = router;
