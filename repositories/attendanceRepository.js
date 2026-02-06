@@ -2,12 +2,17 @@ const pool = require('../config/database');
 
 const findAlphaWithoutDetailsByStudent = async (studentId) => {
   const q = `
-    SELECT sa.id AS attendance_id,
-           to_char(COALESCE(sc.date::date, sa.created_at::date), 'YYYY-MM-DD') AS date,
-           to_char(COALESCE(sc.date::date, sa.created_at::date), 'FMDay') AS day_name,
-           sa.status
+        SELECT sa.id AS attendance_id,
+          to_char(COALESCE(sc.date::date, sa.created_at::date), 'YYYY-MM-DD') AS date,
+          to_char(COALESCE(sc.date::date, sa.created_at::date), 'FMDay') AS day_name,
+          sa.status,
+          sad.id AS detail_id,
+          sad.status AS detail_status,
+          sad.approval_status
+    -- include any existing detail record (if any) so caller can know if a reason was submitted
     FROM student_attendances sa
     LEFT JOIN school_calendar sc ON sa.calendar_id = sc.id
+    LEFT JOIN student_attendance_details sad ON sad.attendance_id = sa.id
     WHERE sa.student_id = $1
       AND sa.status = 'alpa'
     ORDER BY date DESC

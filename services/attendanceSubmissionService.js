@@ -16,7 +16,7 @@ const pool = require('../config/database');
  * @param {Object} params
  * @param {number} params.studentId - The student requesting the submission
  * @param {number} params.attendanceId - The attendance record ID
- * @param {string} params.status - New status (sakit, izin, etc.)
+ * @param {string} params.reason - Reason (sakit, izin, alpa)
  * @param {string} params.description - Reason description
  * @param {string} params.evidence_url - URL of uploaded evidence (optional)
  * 
@@ -31,7 +31,7 @@ const pool = require('../config/database');
 const submitAttendanceReason = async ({
   studentId,
   attendanceId,
-  status,
+  reason,
   description,
   evidence_url = null
 }) => {
@@ -40,7 +40,7 @@ const submitAttendanceReason = async ({
 
   try {
     console.log(
-      `[submitAttendanceReason] START: studentId=${studentId}, attendanceId=${attendanceId}, status=${status}`
+      `[submitAttendanceReason] START: studentId=${studentId}, attendanceId=${attendanceId}, reason=${reason}`
     );
 
     // Start transaction
@@ -81,18 +81,6 @@ const submitAttendanceReason = async ({
       return { status: 403, error: 'Anda tidak memiliki akses ke attendance ini' };
     }
 
-    // Step 1c: Check if current status is 'alpa'
-    console.log(`[submitAttendanceReason] Attendance current status: ${attendance.status}`);
-    if (attendance.status !== 'alpa') {
-      console.log(`[submitAttendanceReason] ROLLBACK: Status is not 'alpa'`);
-      await client.query('ROLLBACK');
-      transactionStarted = false;
-      return {
-        status: 400,
-        error: 'Hanya attendance dengan status alpa yang dapat diberikan alasan'
-      };
-    }
-
     // Step 2: Check if detail record already exists
     const qCheckDuplicate = `
       SELECT 1 
@@ -111,36 +99,25 @@ const submitAttendanceReason = async ({
       return { status: 409, error: 'Alasan untuk attendance ini sudah ada' };
     }
 
-    // Step 3: Insert into student_attendance_details
+    // Step 3: Insert into student_attendance_details (approval_status = 'pending')
     console.log(
-      `[submitAttendanceReason] Inserting detail: attendance_id=${attendanceId}, status=${status}, description=${description}`
+      `[submitAttendanceReason] Inserting detail: attendance_id=${attendanceId}, status=${reason}, description=${description}`
     );
+    // DB table uses column `status` for the detail's reason/status. Insert into `status` for compatibility.
     const qInsertDetail = `
       INSERT INTO student_attendance_details 
-      (attendance_id, status, description, evidence_url, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, NOW(), NOW())
+      (attendance_id, status, description, evidence_url, approval_status, approved_by, approved_at, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, 'pending', NULL, NULL, NOW(), NOW())
       RETURNING *
     `;
     const rInsertDetail = await client.query(qInsertDetail, [
       attendanceId,
-      status,
+      reason,
       description,
       evidence_url
     ]);
     const insertedDetail = rInsertDetail.rows[0];
     console.log(`[submitAttendanceReason] insertDetail result:`, insertedDetail);
-
-    // Step 4: Update student_attendances status
-    console.log(`[submitAttendanceReason] Updating attendance status to: ${status}`);
-    const qUpdateAttendance = `
-      UPDATE student_attendances 
-      SET status = $1, updated_at = NOW() 
-      WHERE id = $2 
-      RETURNING *
-    `;
-    const rUpdateAttendance = await client.query(qUpdateAttendance, [status, attendanceId]);
-    const updatedAttendance = rUpdateAttendance.rows[0];
-    console.log(`[submitAttendanceReason] updateAttendance result:`, updatedAttendance);
 
     // Commit transaction
     console.log(`[submitAttendanceReason] Executing COMMIT`);
@@ -159,9 +136,9 @@ const submitAttendanceReason = async ({
       const qVerify = `
         SELECT * 
         FROM student_attendance_details 
-        WHERE attendance_id = $1
+        WHERE id = $1
       `;
-      const rVerify = await verifyClient.query(qVerify, [attendanceId]);
+      const rVerify = await verifyClient.query(qVerify, [insertedDetail.id]);
       console.log(
         `[submitAttendanceReason] Post-commit verification: found ${rVerify.rows.length} record(s)`
       );
@@ -182,7 +159,7 @@ const submitAttendanceReason = async ({
     return {
       status: 200,
       data: {
-        attendance: updatedAttendance,
+        attendance: attendance,
         detail: insertedDetail
       }
     };

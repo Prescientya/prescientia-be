@@ -8,8 +8,8 @@ const service = require('../services/attendanceSubmissionService');
  * 
  * Request body:
  * {
- *   "status": "sakit" | "izin" (required, string)
- *   "description": "Alasan ketidakhadiran..." (required, string)
+ *   "reason": "sakit" | "izin" | "alpa" (required, string)
+ *   "description": "Alasan ketidakhadiran..." (optional, string)
  *   "evidence_url": "https://..." (optional, string)
  * }
  * 
@@ -41,30 +41,29 @@ const submitAttendanceReason = async (req, res) => {
     }
 
     // Extract and validate required fields from request body
-    const { status, description, evidence_url = null } = req.body;
+    // Accept both `reason` (preferred) and legacy `status` field as alias
+    const rawReason = req.body.reason ?? req.body.status;
+    const description = req.body.description ?? null;
+    const evidence_url = req.body.evidence_url ?? null;
 
-    // Validate status (required, non-empty string)
-    if (!status || typeof status !== 'string' || status.trim() === '') {
+    // Validate reason (required, one of allowed values)
+    const allowed = ['sakit', 'izin', 'alpa'];
+    if (!rawReason || typeof rawReason !== 'string' || !allowed.includes(rawReason.trim())) {
       return res.status(400).json({
         success: false,
-        message: 'Field status harus diisi (contoh: sakit, izin)'
+        message: "Field reason (atau status) harus salah satu dari: 'sakit','izin','alpa'"
       });
     }
+    const reason = rawReason.trim();
 
-    // Validate description (required, non-empty string)
-    if (!description || typeof description !== 'string' || description.trim() === '') {
-      return res.status(400).json({
-        success: false,
-        message: 'Field description harus diisi'
-      });
+    // Validate description if provided
+    if (description !== null && typeof description !== 'string') {
+      return res.status(400).json({ success: false, message: 'Field description harus berupa string' });
     }
 
-    // Validate evidence_url if provided (must be valid URL string)
-    if (evidence_url && typeof evidence_url !== 'string') {
-      return res.status(400).json({
-        success: false,
-        message: 'Field evidence_url harus berupa URL string'
-      });
+    // Validate evidence_url if provided (must be string)
+    if (evidence_url !== null && typeof evidence_url !== 'string') {
+      return res.status(400).json({ success: false, message: 'Field evidence_url harus berupa URL string' });
     }
 
     console.log(`[submitAttendanceReason] Controller: studentId=${studentId}, attendanceId=${attendanceId}`);
@@ -73,8 +72,8 @@ const submitAttendanceReason = async (req, res) => {
     const result = await service.submitAttendanceReason({
       studentId,
       attendanceId,
-      status: status.trim(),
-      description: description.trim(),
+      reason,
+      description: description ? description.trim() : null,
       evidence_url: evidence_url ? evidence_url.trim() : null
     });
 

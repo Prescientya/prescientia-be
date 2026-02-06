@@ -11,20 +11,29 @@ const getAlphaNotificationsForStudent = async (studentId) => {
   // Fetch attendances that are 'alpa' and have no details recorded yet
   const rows = await attendanceRepo.findAlphaWithoutDetailsByStudent(studentId);
 
-  // Map to notification shape
-  return rows.map(r => ({
-    attendance_id: r.attendance_id,
-    date: r.date,
-    day_name: r.day_name,
-    status: r.status,
-    message: `Pada hari ${r.day_name}, tanggal ${r.date}, anda tidak berangkat sekolah dan tidak memberikan alasan. Silakan berikan alasan ketidakhadiran anda.`,
-    action: {
-      label: 'Beri Alasan',
-      // client should replace with proper route; provide REST endpoint
-      url: `/api/student/attendance/${r.attendance_id}/reason`
-    },
-    show_action_button: true
-  }));
+  // Map to notification shape. If a detail record exists, include its status and approval_status
+  return rows.map(r => {
+    const hasDetail = r.detail_id || r.status /* keep backwards compatibility if alias */ && (r.detail_status || r.approval_status);
+    return {
+      attendance_id: r.attendance_id,
+      date: r.date,
+      day_name: r.day_name,
+      status: r.status,
+      message: `Pada hari ${r.day_name}, tanggal ${r.date}, anda tidak berangkat sekolah dan tidak memberikan alasan. Silakan berikan alasan ketidakhadiran anda.`,
+      action: {
+        label: 'Beri Alasan',
+        url: `/api/student/attendance/${r.attendance_id}/reason`
+      },
+      // show action only if there is no detail record for this attendance
+      show_action_button: !r.detail_id,
+      // expose detail fields if present
+      detail: r.detail_id ? {
+        id: r.detail_id,
+        status: r.detail_status || null,
+        approval_status: r.approval_status || null
+      } : null
+    };
+  });
 };
 
 /**

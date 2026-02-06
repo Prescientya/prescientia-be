@@ -79,7 +79,54 @@ function requireKM(req, res, next) {
   }
 }
 
+// requireTeacher middleware
+// - verifies JWT using process.env.JWT_SECRET
+// - ensures decoded.user_type === 'teacher'
+// - attaches decoded payload to req.user
+// - responds with Indonesian error messages on failure
+function requireTeacher(req, res, next) {
+  try {
+    const token = extractBearerToken(req);
+    if (!token) {
+      return res.status(401).json({ success: false, message: 'Token tidak ditemukan. Silakan login.' });
+    }
+
+    // Use same secret fallback as used when signing the token in auth route
+    const secret = process.env.JWT_SECRET || 'change_this_secret';
+
+    jwt.verify(token, secret, (err, decoded) => {
+      if (err) {
+        if (err.name === 'TokenExpiredError') {
+          return res.status(401).json({ success: false, message: 'Token kadaluwarsa. Silakan login kembali.' });
+        }
+        return res.status(401).json({ success: false, message: 'Token tidak valid.' });
+      }
+
+      // Ensure token contains required shape and mandatory teacher_id
+      if (!decoded || decoded.user_type !== 'teacher' || !decoded.teacher_id) {
+        return res.status(401).json({ success: false, message: 'Token tidak valid atau tidak mengandung teacher_id.' });
+      }
+
+      // Attach a minimal, explicit `req.user` shape for downstream authorization
+      req.user = {
+        user_id: decoded.user_id,
+        teacher_id: decoded.teacher_id,
+        user_type: decoded.user_type,
+        department: decoded.department || null,
+        teacher_roles: decoded.teacher_roles || null,
+        homeroom_classes: decoded.homeroom_classes || null
+      };
+
+      return next();
+    });
+  } catch (error) {
+    console.error('requireTeacher error:', error);
+    return res.status(500).json({ success: false, message: 'Terjadi kesalahan pada server.' });
+  }
+}
+
 module.exports = {
   requireStudent,
-  requireKM
+  requireKM,
+  requireTeacher
 };

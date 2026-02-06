@@ -2,6 +2,16 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const bcrypt = require('bcrypt');
+const { requireTeacher } = require('../middlewares/auth.middleware');
+const teacherScheduleController = require('../controllers/teacherScheduleController');
+
+// ==================== TEACHER SCHEDULE ENDPOINTS ====================
+
+// GET today's classes for authenticated teacher
+router.get('/today-classes', requireTeacher, teacherScheduleController.getTodayClasses);
+
+// GET all classes taught by authenticated teacher (grouped by class and subject)
+router.get('/my-classes', requireTeacher, teacherScheduleController.getMyClasses);
 
 // ==================== TEACHERS CRUD ====================
 

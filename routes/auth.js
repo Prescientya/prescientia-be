@@ -177,6 +177,70 @@ router.post('/login/guru', async (req, res) => {
 
     delete teacher.password;
 
+    // Fetch teacher roles (from teacher_class_roles) and homeroom classes
+    let teacherRoles = [];
+    let homeroomClasses = [];
+    try {
+      // Try to fetch class-specific roles if the column exists
+      const qRoles = `SELECT id, teacher_id, role, class_id FROM teacher_class_roles WHERE teacher_id = $1`;
+      const rRoles = await pool.query(qRoles, [teacher.teacher_id]);
+      teacherRoles = rRoles.rows.map(r => ({ id: r.id, role: r.role, class_id: r.class_id || null }));
+    } catch (e) {
+      // If teacher_class_roles doesn't have class_id column, fall back to selecting role only
+      try {
+        const qRoles2 = `SELECT id, teacher_id, role FROM teacher_class_roles WHERE teacher_id = $1`;
+        const rRoles2 = await pool.query(qRoles2, [teacher.teacher_id]);
+        teacherRoles = rRoles2.rows.map(r => ({ id: r.id, role: r.role }));
+      } catch (err) {
+        console.warn('Could not fetch teacher_class_roles:', err.message);
+        teacherRoles = [];
+      }
+    }
+
+    try {
+      const qHomeroom = `SELECT id FROM classes WHERE homeroom_teacher_id = $1`;
+      const rHomeroom = await pool.query(qHomeroom, [teacher.teacher_id]);
+      homeroomClasses = rHomeroom.rows.map(r => r.id);
+    } catch (err) {
+      console.warn('Could not fetch homeroom classes:', err.message);
+      homeroomClasses = [];
+    }
+
+    // Normalize teacher_roles: if single role then return as human-friendly string,
+    // otherwise keep as array of role names.
+    let teacherRoleValue = null;
+    if (teacherRoles.length === 1) {
+      // convert role like 'wali_kelas' -> 'wali kelas' for display
+      teacherRoleValue = String(teacherRoles[0].role).replace(/_/g, ' ');
+    } else if (teacherRoles.length > 1) {
+      teacherRoleValue = teacherRoles.map(r => String(r.role).replace(/_/g, ' '));
+    }
+
+    // Normalize homeroom_classes: single value when one, array when many, null when none
+    let homeroomClassesValue = null;
+    if (Array.isArray(homeroomClasses)) {
+      if (homeroomClasses.length === 1) {
+        homeroomClassesValue = homeroomClasses[0];
+      } else if (homeroomClasses.length > 1) {
+        homeroomClassesValue = homeroomClasses;
+      } else {
+        homeroomClassesValue = null;
+      }
+    }
+
+    // Build JWT payload for teacher (include roles and homeroom info)
+    const payload = {
+      user_id: teacher.user_id,
+      teacher_id: teacher.teacher_id,
+      user_type: 'teacher',
+      department: teacher.department,
+      teacher_roles: teacherRoleValue,
+      homeroom_classes: homeroomClassesValue
+    };
+
+    // Sign token
+    const token = jwt.sign(payload, process.env.JWT_SECRET || 'change_this_secret', { expiresIn: process.env.JWT_EXPIRE || '7d' });
+
     res.json({
       success: true,
       message: 'Login berhasil',
@@ -194,7 +258,10 @@ router.post('/login/guru', async (req, res) => {
         photo_profile: teacher.photo_profile,
         device_id: teacher.device_id,
         wifi_mac: teacher.wifi_mac,
-        role: 'guru'
+        role: 'guru',
+        teacher_roles: teacherRoleValue,
+        homeroom_classes: homeroomClassesValue,
+        token // JWT for client to use in Authorization header
       }
     });
   } catch (error) {
