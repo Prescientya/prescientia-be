@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
+const { requireStudent } = require('../middlewares/auth.middleware');
 
 // ==================== STUDENT ATTENDANCES CRUD ====================
 
@@ -145,25 +146,31 @@ router.get('/', async (req, res) => {
   }
 });
 
-// APP: GET student attendances with filters (student_id, date, limit)
-router.get('/app', async (req, res) => {
+// APP: GET student attendances with filters (date, limit)
+// Protected: student_id is derived from JWT token; query param student_id is
+// accepted only for admin/dashboard use but MUST match the token's student_id.
+router.get('/app', requireStudent, async (req, res) => {
   try {
-    const { student_id, date, limit = 30 } = req.query;
+    const { date, limit = 30 } = req.query;
 
-    // Validasi: student_id harus ada dan berupa angka
-    if (!student_id) {
-      return res.status(400).json({
+    // Always derive student_id from the authenticated token to prevent IDOR
+    const parsedStudentId = Number(req.user.student_id);
+    if (!parsedStudentId || isNaN(parsedStudentId) || parsedStudentId <= 0) {
+      return res.status(401).json({
         success: false,
-        message: 'student_id adalah parameter yang wajib diisi'
+        message: 'Token tidak mengandung student_id yang valid'
       });
     }
 
-    const parsedStudentId = parseInt(student_id, 10);
-    if (isNaN(parsedStudentId) || parsedStudentId <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'student_id harus berupa angka positif yang valid'
-      });
+    // If caller explicitly passes student_id, ensure it matches the token
+    if (req.query.student_id !== undefined) {
+      const queriedId = parseInt(req.query.student_id, 10);
+      if (queriedId !== parsedStudentId) {
+        return res.status(403).json({
+          success: false,
+          message: 'Akses ditolak: student_id tidak sesuai dengan token'
+        });
+      }
     }
 
     const parsedLimit = parseInt(limit, 10);
@@ -319,34 +326,82 @@ router.post('/', async (req, res) => {
 });
 
 // APP: student login -> create attendance if not exists (used when student opens the app)
-router.post('/app/login', async (req, res) => {
+router.post('/app/login', requireStudent, async (req, res) => {
   try {
-    const { student_id, class_id, calendar_id, source = 'digital_wifi', check_in_time } = req.body;
+    const { calendar_id, source = 'digital_wifi', check_in_time } = req.body;
 
-    if (!student_id || !class_id || !calendar_id) {
-      return res.status(400).json({ success: false, message: 'student_id, class_id, calendar_id harus diisi' });
+    // student_id and class_id will be taken from token (req.user)
+    const student_id = req.user && req.user.student_id;
+    const class_id = (req.user && req.user.class_id) || req.body.class_id;
+
+    if (!student_id) {
+      return res.status(401).json({ success: false, message: 'Token tidak mengandung student_id' });
+    }
+
+    if (!class_id || !calendar_id) {
+      return res.status(400).json({ success: false, message: 'class_id (dalam token atau body) dan calendar_id harus diisi' });
     }
 
     if (!['digital_wifi', 'guru_pengajar', 'wali_kelas', 'self_report', 'manual'].includes(source)) {
       return res.status(400).json({ success: false, message: 'Source tidak valid' });
     }
 
+    // Validate student exists
+    const studentCheckQ = 'SELECT id FROM students WHERE id = $1';
+    const studentCheckR = await pool.query(studentCheckQ, [student_id]);
+    if (studentCheckR.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Student tidak ditemukan' });
+    }
+
+    // Validate class exists
+    const classCheckQ = 'SELECT id FROM classes WHERE id = $1';
+    const classCheckR = await pool.query(classCheckQ, [class_id]);
+    if (classCheckR.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Class tidak ditemukan' });
+    }
+
+    // Validate calendar exists
+    const calCheckQ = 'SELECT id FROM school_calendar WHERE id = $1';
+    const calCheckR = await pool.query(calCheckQ, [calendar_id]);
+    if (calCheckR.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Calendar (jadwal) tidak ditemukan' });
+    }
+
     // Check existing attendance (unique constraint student_id + calendar_id)
     const existQ = 'SELECT * FROM student_attendances WHERE student_id = $1 AND calendar_id = $2 LIMIT 1';
     const existR = await pool.query(existQ, [student_id, calendar_id]);
     if (existR.rows.length > 0) {
-      // If exists, return it (optionally update check_in_time if missing)
       const existing = existR.rows[0];
+      // Special case: record exists but check_in_time was never set — patch it in
       if (!existing.check_in_time && check_in_time) {
-        const upd = await pool.query('UPDATE student_attendances SET check_in_time = $1, updated_at = NOW() WHERE id = $2 RETURNING *', [check_in_time, existing.id]);
+        const upd = await pool.query(
+          'UPDATE student_attendances SET check_in_time = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
+          [check_in_time, existing.id]
+        );
         return res.json({ success: true, message: 'Student attendance updated (check_in_time)', data: upd.rows[0] });
       }
-      return res.json({ success: true, message: 'Student attendance sudah ada', data: existing });
+      // True duplicate: attendance for this student + calendar already fully exists
+      return res.status(409).json({
+        success: false,
+        message: 'Attendance untuk hari ini sudah tercatat.',
+        data: existing
+      });
     }
 
-    // default status to 'hadir'
-    const status = 'hadir';
     const inTime = check_in_time || new Date().toISOString();
+    // determine status based on check-in time: after 06:30 -> 'terlambat'
+    let status = 'hadir';
+    try {
+      const dt = new Date(inTime);
+      const hr = dt.getHours();
+      const min = dt.getMinutes();
+      const isAfter0630 = (hr > 6) || (hr === 6 && min > 30);
+      if (isAfter0630) {
+        status = 'terlambat';
+      }
+    } catch (e) {
+      // if invalid date, keep default 'hadir'
+    }
 
     const insertQ = `
       INSERT INTO student_attendances (student_id, class_id, calendar_id, check_in_time, status, source, created_at, updated_at)
@@ -362,22 +417,32 @@ router.post('/app/login', async (req, res) => {
 });
 
 // APP: student logout -> update check_out_time (used when student closes the app)
-// Accepts either `id` in body, or `student_id`+`calendar_id` to find the record
-router.patch('/app/logout', async (req, res) => {
+// Protected: student_id is always taken from the JWT token to prevent IDOR.
+// Accepts either attendance `id` in body, or `calendar_id` to find the record.
+router.patch('/app/logout', requireStudent, async (req, res) => {
   try {
-    const { id, student_id, calendar_id, check_out_time } = req.body || {};
+    // student_id is authoritative from token — never trust body for identity
+    const student_id = req.user.student_id;
+    const { id, calendar_id, check_out_time } = req.body || {};
     let attendanceId = id;
 
     if (!attendanceId) {
-      if (!student_id || !calendar_id) {
-        return res.status(400).json({ success: false, message: 'Berikan `id` atau `student_id` dan `calendar_id` untuk logout' });
+      if (!calendar_id) {
+        return res.status(400).json({ success: false, message: 'Berikan `id` atau `calendar_id` untuk logout' });
       }
       const findQ = 'SELECT id FROM student_attendances WHERE student_id = $1 AND calendar_id = $2 LIMIT 1';
       const findR = await pool.query(findQ, [student_id, calendar_id]);
       if (findR.rows.length === 0) {
-        return res.status(404).json({ success: false, message: 'Attendance tidak ditemukan untuk student_id + calendar_id tersebut' });
+        return res.status(404).json({ success: false, message: 'Attendance tidak ditemukan untuk student dan calendar tersebut' });
       }
       attendanceId = findR.rows[0].id;
+    } else {
+      // When `id` is provided directly, verify ownership to prevent IDOR
+      const ownerQ = 'SELECT id FROM student_attendances WHERE id = $1 AND student_id = $2 LIMIT 1';
+      const ownerR = await pool.query(ownerQ, [attendanceId, student_id]);
+      if (ownerR.rows.length === 0) {
+        return res.status(403).json({ success: false, message: 'Akses ditolak: attendance tidak dimiliki student ini' });
+      }
     }
 
     const outTime = check_out_time || new Date().toISOString();

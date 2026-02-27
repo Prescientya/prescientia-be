@@ -23,6 +23,7 @@ const mbgRoutes = require('./routes/mbg');
 const studentAttendanceSummaryRoutes = require('./routes/studentAttendanceSummary');
 const attendanceRoutes = require('./routes/attendance'); // Wi-Fi based attendance validation
 const classManagementRoutes = require('./routes/classManagement'); // Class attendance management
+const deviceChangeRequestsRoutes = require('./routes/deviceChangeRequests'); // Device change requests management
 const { errorHandler, notFound } = require('./middleware/errorHandler');
 const { testConnection } = require('./config/db-helper');
 const { displayRoutes } = require('./utils/routeAnalyzer2');
@@ -65,7 +66,8 @@ const routes = [
   { path: '/api/mbg', handler: mbgRoutes },
   { path: '/api/student-attendance-summary', handler: studentAttendanceSummaryRoutes },
   { path: '/api/attendance', handler: attendanceRoutes },
-  { path: '/api/class-management', handler: classManagementRoutes }
+  { path: '/api/class-management', handler: classManagementRoutes },
+  { path: '/api/device-change-requests', handler: deviceChangeRequestsRoutes }
 ];
 
 // Register all routes dynamically

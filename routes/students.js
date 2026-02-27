@@ -20,7 +20,7 @@ router.get('/', async (req, res) => {
       FROM students s
       INNER JOIN users u ON s.user_id = u.id
       LEFT JOIN classes c ON s.class_id = c.id
-      WHERE s.deleted_at IS NULL
+      WHERE 1=1
     `;
     const params = [];
     let paramIndex = 1;
@@ -43,7 +43,7 @@ router.get('/', async (req, res) => {
     const result = await pool.query(query, params);
     
     // Count query
-    let countQuery = 'SELECT COUNT(*) FROM students WHERE deleted_at IS NULL';
+    let countQuery = 'SELECT COUNT(*) FROM students WHERE 1=1';
     const countParams = [];
     let countParamIndex = 1;
     
@@ -100,14 +100,13 @@ router.get('/profile', requireStudent, async (req, res) => {
         s.date_of_birth,
         s.phone_number,
         s.address,
-        s.class_id,
+        s.class_id as student_class_id,
         s.photo_profile,
         s.created_at as student_created_at,
         s.updated_at as student_updated_at,
         u.email,
         u.email_verified_at,
         u.device_id,
-        u.wifi_mac,
         u.is_active,
         u.last_login_at,
         u.created_at as user_created_at,
@@ -118,7 +117,7 @@ router.get('/profile', requireStudent, async (req, res) => {
       FROM students s
       INNER JOIN users u ON s.user_id = u.id
       LEFT JOIN classes c ON s.class_id = c.id
-      WHERE s.id = $1 AND s.deleted_at IS NULL AND u.deleted_at IS NULL
+      WHERE s.id = $1
     `;
     
     const result = await pool.query(query, [studentId]);
@@ -142,7 +141,6 @@ router.get('/profile', requireStudent, async (req, res) => {
           email: profile.email,
           email_verified_at: profile.email_verified_at,
           device_id: profile.device_id,
-          wifi_mac: profile.wifi_mac,
           is_active: profile.is_active,
           last_login_at: profile.last_login_at,
           created_at: profile.user_created_at,
@@ -166,7 +164,11 @@ router.get('/profile', requireStudent, async (req, res) => {
           id: profile.class_id,
           level: profile.class_level,
           major: profile.class_major
-        } : null
+        } : (profile.student_class_id ? {
+          id: profile.student_class_id,
+          level: profile.class_level,
+          major: profile.class_major
+        } : null)
       }
     });
   } catch (error) {
@@ -192,7 +194,7 @@ router.get('/:id', async (req, res) => {
       FROM students s
       INNER JOIN users u ON s.user_id = u.id
       LEFT JOIN classes c ON s.class_id = c.id
-      WHERE s.id = $1 AND s.deleted_at IS NULL
+      WHERE s.id = $1
     `;
     
     const result = await pool.query(query, [id]);
@@ -249,7 +251,7 @@ router.post('/', async (req, res) => {
     
     // Cek email duplicate
     const checkEmail = await client.query(
-      'SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL',
+      'SELECT id FROM users WHERE email = $1',
       [email]
     );
     
@@ -263,7 +265,7 @@ router.post('/', async (req, res) => {
     
     // Cek NIS duplicate
     const checkNis = await client.query(
-      'SELECT id FROM students WHERE nis = $1 AND deleted_at IS NULL',
+      'SELECT id FROM students WHERE nis = $1',
       [nis]
     );
     
@@ -341,7 +343,7 @@ router.patch('/:id', async (req, res) => {
     
     // Cek apakah student ada
     const checkStudent = await pool.query(
-      'SELECT id FROM students WHERE id = $1 AND deleted_at IS NULL',
+      'SELECT id FROM students WHERE id = $1',
       [id]
     );
     
@@ -355,7 +357,7 @@ router.patch('/:id', async (req, res) => {
     // Cek NIS duplicate jika NIS diubah
     if (nis) {
       const checkNis = await pool.query(
-        'SELECT id FROM students WHERE nis = $1 AND id != $2 AND deleted_at IS NULL',
+        'SELECT id FROM students WHERE nis = $1 AND id != $2',
         [nis, id]
       );
       
@@ -442,7 +444,7 @@ router.patch('/:id', async (req, res) => {
       paramIndex++;
     }
     
-    query += ` WHERE id = $${paramIndex} AND deleted_at IS NULL
+    query += ` WHERE id = $${paramIndex}
       RETURNING id, user_id, nis, name, gender, date_of_birth, phone_number, address, class_id, photo_profile, created_at, updated_at`;
     params.push(id);
     
@@ -463,7 +465,7 @@ router.patch('/:id', async (req, res) => {
   }
 });
 
-// DELETE student (soft delete)
+// DELETE student (hard delete)
 router.delete('/:id', async (req, res) => {
   const client = await pool.connect();
   
@@ -474,7 +476,7 @@ router.delete('/:id', async (req, res) => {
     
     // Get user_id first
     const studentResult = await client.query(
-      'SELECT user_id FROM students WHERE id = $1 AND deleted_at IS NULL',
+      'SELECT user_id FROM students WHERE id = $1',
       [id]
     );
     
@@ -488,15 +490,15 @@ router.delete('/:id', async (req, res) => {
     
     const userId = studentResult.rows[0].user_id;
     
-    // Soft delete student
+    // Hard delete student (tabel students tidak lagi menggunakan deleted_at)
     await client.query(
-      'UPDATE students SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1',
+      'DELETE FROM students WHERE id = $1',
       [id]
     );
     
     // Soft delete user
     await client.query(
-      'UPDATE users SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1',
+      'DELETE FROM users WHERE id = $1',
       [userId]
     );
     

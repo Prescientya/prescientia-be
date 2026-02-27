@@ -157,7 +157,7 @@ router.post('/', async (req, res) => {
     // Validasi user_id jika diisi
     if (user_id) {
       const checkUser = await pool.query(
-        'SELECT id FROM users WHERE id = $1 AND deleted_at IS NULL',
+        'SELECT id FROM users WHERE id = $1',
         [user_id]
       );
       if (checkUser.rows.length === 0) {

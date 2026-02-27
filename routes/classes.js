@@ -104,7 +104,7 @@ router.get('/:id', async (req, res) => {
     const studentsQuery = `
       SELECT id, nis, name, gender
       FROM students
-      WHERE class_id = $1 AND deleted_at IS NULL
+      WHERE class_id = $1
       ORDER BY name
     `;
     const studentsResult = await pool.query(studentsQuery, [id]);
@@ -143,7 +143,7 @@ router.get('/:id/students', async (req, res) => {
     let query = `
       SELECT id, nis, name, gender
       FROM students
-      WHERE class_id = $1 AND deleted_at IS NULL
+      WHERE class_id = $1
     `;
     const params = [id];
 
@@ -192,7 +192,7 @@ router.post('/', async (req, res) => {
     // Validasi homeroom_teacher_id jika diisi
     if (homeroom_teacher_id) {
       const checkTeacher = await pool.query(
-        'SELECT id FROM teachers WHERE id = $1 AND deleted_at IS NULL',
+        'SELECT id FROM teachers WHERE id = $1',
         [homeroom_teacher_id]
       );
       
@@ -249,7 +249,7 @@ router.patch('/:id', async (req, res) => {
     // Validasi homeroom_teacher_id jika diisi
     if (homeroom_teacher_id) {
       const checkTeacher = await pool.query(
-        'SELECT id FROM teachers WHERE id = $1 AND deleted_at IS NULL',
+        'SELECT id FROM teachers WHERE id = $1',
         [homeroom_teacher_id]
       );
       
@@ -311,7 +311,7 @@ router.delete('/:id', async (req, res) => {
     
     // Cek apakah ada students di class ini
     const checkStudents = await pool.query(
-      'SELECT COUNT(*) FROM students WHERE class_id = $1 AND deleted_at IS NULL',
+      'SELECT COUNT(*) FROM students WHERE class_id = $1',
       [id]
     );
     

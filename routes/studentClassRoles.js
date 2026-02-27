@@ -18,7 +18,7 @@ router.get('/', async (req, res) => {
       FROM student_class_roles scr
       INNER JOIN students s ON scr.student_id = s.id
       INNER JOIN classes c ON scr.class_id = c.id
-      WHERE s.deleted_at IS NULL
+      WHERE 1=1
     `;
     const params = [];
     let paramIndex = 1;
@@ -44,7 +44,7 @@ router.get('/', async (req, res) => {
     let countQuery = `
       SELECT COUNT(*) FROM student_class_roles scr
       INNER JOIN students s ON scr.student_id = s.id
-      WHERE s.deleted_at IS NULL
+      WHERE 1=1
     `;
     const countParams = [];
     let countParamIndex = 1;
@@ -155,7 +155,7 @@ router.post('/', async (req, res) => {
     
     // Cek student exists
     const checkStudent = await pool.query(
-      'SELECT id FROM students WHERE id = $1 AND deleted_at IS NULL',
+      'SELECT id FROM students WHERE id = $1',
       [student_id]
     );
     if (checkStudent.rows.length === 0) {

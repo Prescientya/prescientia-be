@@ -14,14 +14,13 @@ router.get('/petugas', async (req, res) => {
     const query = `
       SELECT id, username, created_at, updated_at
       FROM petugas_mbg
-      WHERE deleted_at IS NULL
       ORDER BY created_at DESC
       LIMIT $1 OFFSET $2
     `;
     
     const result = await pool.query(query, [limit, offset]);
     const countResult = await pool.query(
-      'SELECT COUNT(*) FROM petugas_mbg WHERE deleted_at IS NULL'
+      'SELECT COUNT(*) FROM petugas_mbg'
     );
     
     res.json({
@@ -53,7 +52,7 @@ router.get('/petugas/:id', async (req, res) => {
     const query = `
       SELECT id, username, created_at, updated_at
       FROM petugas_mbg
-      WHERE id = $1 AND deleted_at IS NULL
+      WHERE id = $1
     `;
     
     const result = await pool.query(query, [id]);
@@ -95,7 +94,7 @@ router.post('/petugas', async (req, res) => {
     
     // Cek duplicate username
     const checkUsername = await pool.query(
-      'SELECT id FROM petugas_mbg WHERE username = $1 AND deleted_at IS NULL',
+      'SELECT id FROM petugas_mbg WHERE username = $1',
       [username]
     );
     
@@ -140,7 +139,7 @@ router.patch('/petugas/:id', async (req, res) => {
 
     // Cek apakah petugas ada
     const checkPetugas = await pool.query(
-      'SELECT id, username FROM petugas_mbg WHERE id = $1 AND deleted_at IS NULL',
+      'SELECT id, username FROM petugas_mbg WHERE id = $1',
       [id]
     );
 
@@ -159,7 +158,7 @@ router.patch('/petugas/:id', async (req, res) => {
     if (username !== undefined) {
       // check duplicate username (exclude current)
       const dup = await pool.query(
-        'SELECT id FROM petugas_mbg WHERE username = $1 AND id != $2 AND deleted_at IS NULL',
+        'SELECT id FROM petugas_mbg WHERE username = $1 AND id != $2',
         [username, id]
       );
       if (dup.rows.length > 0) {
@@ -186,7 +185,7 @@ router.patch('/petugas/:id', async (req, res) => {
 
     // always update updated_at
     const setClause = updates.join(', ') + `, updated_at = NOW()`;
-    const query = `UPDATE petugas_mbg SET ${setClause} WHERE id = $${idx} AND deleted_at IS NULL RETURNING id, username, created_at, updated_at`;
+    const query = `UPDATE petugas_mbg SET ${setClause} WHERE id = $${idx} RETURNING id, username, created_at, updated_at`;
     params.push(id);
 
     const result = await pool.query(query, params);
@@ -212,9 +211,8 @@ router.delete('/petugas/:id', async (req, res) => {
     const { id } = req.params;
     
     const query = `
-      UPDATE petugas_mbg 
-      SET deleted_at = NOW(), updated_at = NOW()
-      WHERE id = $1 AND deleted_at IS NULL
+      DELETE FROM petugas_mbg
+      WHERE id = $1
       RETURNING id
     `;
     

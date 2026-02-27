@@ -9,31 +9,119 @@ router.get('/test', (req, res) => {
   res.json({ message: 'Auth route is working!' });
 });
 
+// GET user by NIS (student) and password - returns user+student info (no password)
+router.get('/user/siswa', async (req, res) => {
+  const { nis, password } = req.query;
+  try {
+    if (!nis || !password) {
+      return res.status(400).json({ success: false, message: 'nis dan password harus disertakan' });
+    }
+
+    const q = `
+      SELECT 
+        s.id as student_id, s.nis, s.name, s.gender, s.date_of_birth,
+        s.phone_number, s.address, s.class_id, s.photo_profile,
+        u.id as user_id, u.email, u.password, u.is_active, u.device_id, u.created_at as user_created_at, u.updated_at as user_updated_at
+      FROM students s
+      INNER JOIN users u ON s.user_id = u.id
+      WHERE s.nis COLLATE "C" = $1 COLLATE "C"
+    `;
+
+    const result = await pool.query(q, [nis]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'User siswa tidak ditemukan' });
+    }
+
+    const row = result.rows[0];
+
+    let hashed = row.password || '';
+    if (hashed.startsWith('$2y$')) hashed = hashed.replace('$2y$', '$2b$');
+
+    const ok = await bcrypt.compare(password, hashed);
+    if (!ok) {
+      return res.status(401).json({ success: false, message: 'nis atau password salah' });
+    }
+
+    // remove password before sending
+    delete row.password;
+
+    res.json({ success: true, message: 'user ditemukan', data: row });
+  } catch (err) {
+    console.error('GET user siswa error:', err);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan pada server' });
+  }
+});
+
+// GET user by NIP (teacher) and password - returns user+teacher info (no password)
+router.get('/user/guru', async (req, res) => {
+  const { nip, password } = req.query;
+  try {
+    if (!nip || !password) {
+      return res.status(400).json({ success: false, message: 'nip dan password harus disertakan' });
+    }
+
+    const q = `
+      SELECT 
+        t.id as teacher_id, t.nip, t.name, t.gender, t.date_of_birth,
+        t.phone_number, t.address, t.department, t.photo_profile,
+        u.id as user_id, u.email, u.password, u.is_active, u.device_id, u.created_at as user_created_at, u.updated_at as user_updated_at
+      FROM teachers t
+      INNER JOIN users u ON t.user_id = u.id
+      WHERE t.nip COLLATE "C" = $1 COLLATE "C"
+    `;
+
+    const result = await pool.query(q, [nip]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'User guru tidak ditemukan' });
+    }
+
+    const row = result.rows[0];
+
+    let hashed = row.password || '';
+    if (hashed.startsWith('$2y$')) hashed = hashed.replace('$2y$', '$2b$');
+
+    const ok = await bcrypt.compare(password, hashed);
+    if (!ok) {
+      return res.status(401).json({ success: false, message: 'nip atau password salah' });
+    }
+
+    delete row.password;
+    res.json({ success: true, message: 'user ditemukan', data: row });
+  } catch (err) {
+    console.error('GET user guru error:', err);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan pada server' });
+  }
+});
+
 // ==================== LOGIN ENDPOINTS ====================
 
 // Login endpoint untuk Siswa (Student)
 router.post('/login/siswa', async (req, res) => {
   console.log('Login Siswa request received:', req.body);
-  const { nisn, password } = req.body;
+  const { nisn, password, device_id } = req.body;
 
   try {
-    if (!nisn || !password) {
+    if (!nisn || !password || !device_id) {
       return res.status(400).json({
         success: false,
-        message: 'NISN dan password harus diisi'
+        message: 'NISN, password, dan device_id harus diisi'
       });
+    }
+
+    if (typeof device_id !== 'string' || device_id.length === 0 || device_id.length > 255) {
+      return res.status(400).json({ success: false, message: 'device_id harus string dengan panjang maksimal 255 karakter' });
     }
 
     const studentQuery = `
       SELECT 
         s.id as student_id, s.nis, s.name, s.gender, s.date_of_birth,
         s.phone_number, s.address, s.class_id, s.photo_profile,
-        u.id as user_id, u.email, u.password, u.is_active, u.device_id, u.wifi_mac,
+        u.id as user_id, u.email, u.password, u.is_active, u.device_id,
         scr.role as class_role
       FROM students s
       INNER JOIN users u ON s.user_id = u.id
       LEFT JOIN student_class_roles scr ON s.id = scr.student_id AND s.class_id = scr.class_id
-      WHERE s.nis COLLATE "C" = $1 COLLATE "C" AND s.deleted_at IS NULL
+      WHERE s.nis COLLATE "C" = $1 COLLATE "C"
     `;
 
     const result = await pool.query(studentQuery, [nisn]);
@@ -68,8 +156,23 @@ router.post('/login/siswa', async (req, res) => {
       });
     }
 
-    await pool.query('UPDATE users SET last_login_at = NOW() WHERE id = $1', [student.user_id]);
-    await pool.query('INSERT INTO history_login (user_id, login_at, status) VALUES ($1, NOW(), $2)', [student.user_id, 'success']);
+    // Check if device_id differs - inform frontend so it can call POST /api/device-change-requests
+    if (student.device_id && String(student.device_id) !== String(device_id)) {
+      return res.status(401).json({
+        success: false,
+        message: 'device_mismatch',
+        data: {
+          nis: student.nis,
+          user_id: student.user_id,
+          name: student.name,
+          device_id: student.device_id,
+          device_id_new: device_id
+        }
+      });
+    }
+
+    await pool.query('UPDATE users SET last_login_at = NOW(), device_id = $2 WHERE id = $1', [student.user_id, device_id]);
+    await pool.query('INSERT INTO history_login (user_id, login_at, status, device_id) VALUES ($1, NOW(), $2, $3)', [student.user_id, 'success', device_id]);
 
     delete student.password;
     // Build JWT payload according to the agreed structure
@@ -84,7 +187,13 @@ router.post('/login/siswa', async (req, res) => {
     };
 
     // Sign token
-    const token = jwt.sign(payload, process.env.JWT_SECRET || 'change_this_secret', { expiresIn: process.env.JWT_EXPIRE || '7d' });
+    // Student tokens are permanent by default — students cannot be force-logged-out
+    // by expiry. Set JWT_STUDENT_EXPIRE (e.g. '10y') in .env only if a time-bounded
+    // policy is ever needed in the future.
+    const studentSignOptions = process.env.JWT_STUDENT_EXPIRE
+      ? { expiresIn: process.env.JWT_STUDENT_EXPIRE }
+      : {};
+    const token = jwt.sign(payload, process.env.JWT_SECRET || 'change_this_secret', studentSignOptions);
 
     res.json({
       success: true,
@@ -101,8 +210,6 @@ router.post('/login/siswa', async (req, res) => {
         address: student.address,
         class_id: student.class_id,
         photo_profile: student.photo_profile,
-        device_id: student.device_id,
-        wifi_mac: student.wifi_mac,
         role: 'siswa',
         class_role: student.class_role || 'pelajar',
         token // JWT for client to use in Authorization header
@@ -120,24 +227,28 @@ router.post('/login/siswa', async (req, res) => {
 // Login endpoint untuk Guru (Teacher)
 router.post('/login/guru', async (req, res) => {
   console.log('Login Guru request received:', req.body);
-  const { nip, password } = req.body;
+  const { nip, password, device_id } = req.body;
 
   try {
-    if (!nip || !password) {
+    if (!nip || !password || !device_id) {
       return res.status(400).json({
         success: false,
-        message: 'NIP dan password harus diisi'
+        message: 'NIP, password, dan device_id harus diisi'
       });
+    }
+
+    if (typeof device_id !== 'string' || device_id.length === 0 || device_id.length > 255) {
+      return res.status(400).json({ success: false, message: 'device_id harus string dengan panjang maksimal 255 karakter' });
     }
 
     const teacherQuery = `
       SELECT 
         t.id as teacher_id, t.nip, t.name, t.gender, t.date_of_birth,
         t.phone_number, t.address, t.department, t.photo_profile,
-        u.id as user_id, u.email, u.password, u.is_active, u.device_id, u.wifi_mac
+        u.id as user_id, u.email, u.password, u.is_active, u.device_id, u.role
       FROM teachers t
       INNER JOIN users u ON t.user_id = u.id
-      WHERE t.nip COLLATE "C" = $1 COLLATE "C" AND t.deleted_at IS NULL
+      WHERE t.nip COLLATE "C" = $1 COLLATE "C"
     `;
 
     const result = await pool.query(teacherQuery, [nip]);
@@ -150,6 +261,14 @@ router.post('/login/guru', async (req, res) => {
     }
 
     const teacher = result.rows[0];
+
+    // Validate that the user account has the 'teacher' role
+    if (teacher.role !== 'teacher') {
+      return res.status(403).json({
+        success: false,
+        message: 'Akun ini tidak memiliki akses sebagai guru.'
+      });
+    }
 
     if (!teacher.is_active) {
       return res.status(403).json({
@@ -172,74 +291,71 @@ router.post('/login/guru', async (req, res) => {
       });
     }
 
-    await pool.query('UPDATE users SET last_login_at = NOW() WHERE id = $1', [teacher.user_id]);
-    await pool.query('INSERT INTO history_login (user_id, login_at, status) VALUES ($1, NOW(), $2)', [teacher.user_id, 'success']);
+    // Check if device_id differs - inform frontend so it can call POST /api/device-change-requests
+    if (teacher.device_id && String(teacher.device_id) !== String(device_id)) {
+      return res.status(401).json({
+        success: false,
+        message: 'device_mismatch',
+        data: {
+          user_id: teacher.user_id,
+          name: teacher.name,
+          device_id: teacher.device_id,
+          device_id_new: device_id
+        }
+      });
+    }
+
+    await pool.query('UPDATE users SET last_login_at = NOW(), device_id = $2 WHERE id = $1', [teacher.user_id, device_id]);
+    await pool.query('INSERT INTO history_login (user_id, login_at, status, device_id) VALUES ($1, NOW(), $2, $3)', [teacher.user_id, 'success', device_id]);
 
     delete teacher.password;
 
-    // Fetch teacher roles (from teacher_class_roles) and homeroom classes
+    // Fetch teacher_class_roles: keeps full objects {role, class_id} so callers
+    // (especially wali_kelas) know exactly which class each role applies to.
     let teacherRoles = [];
-    let homeroomClasses = [];
     try {
-      // Try to fetch class-specific roles if the column exists
-      const qRoles = `SELECT id, teacher_id, role, class_id FROM teacher_class_roles WHERE teacher_id = $1`;
+      const qRoles = `
+        SELECT tcr.role, tcr.class_id,
+               (CASE c.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
+                ELSE c.class::text END || ' ' || COALESCE(c.major::text, '')) AS class_name
+        FROM teacher_class_roles tcr
+        LEFT JOIN classes c ON c.id = tcr.class_id
+        WHERE tcr.teacher_id = $1
+        ORDER BY tcr.role, tcr.class_id`;
       const rRoles = await pool.query(qRoles, [teacher.teacher_id]);
-      teacherRoles = rRoles.rows.map(r => ({ id: r.id, role: r.role, class_id: r.class_id || null }));
-    } catch (e) {
-      // If teacher_class_roles doesn't have class_id column, fall back to selecting role only
-      try {
-        const qRoles2 = `SELECT id, teacher_id, role FROM teacher_class_roles WHERE teacher_id = $1`;
-        const rRoles2 = await pool.query(qRoles2, [teacher.teacher_id]);
-        teacherRoles = rRoles2.rows.map(r => ({ id: r.id, role: r.role }));
-      } catch (err) {
-        console.warn('Could not fetch teacher_class_roles:', err.message);
-        teacherRoles = [];
-      }
-    }
-
-    try {
-      const qHomeroom = `SELECT id FROM classes WHERE homeroom_teacher_id = $1`;
-      const rHomeroom = await pool.query(qHomeroom, [teacher.teacher_id]);
-      homeroomClasses = rHomeroom.rows.map(r => r.id);
+      teacherRoles = rRoles.rows.map(r => ({
+        role: r.role,
+        class_id: r.class_id || null,
+        class_name: r.class_name ? r.class_name.trim() : null
+      }));
     } catch (err) {
-      console.warn('Could not fetch homeroom classes:', err.message);
-      homeroomClasses = [];
+      console.warn('Could not fetch teacher_class_roles:', err.message);
+      teacherRoles = [];
     }
 
-    // Normalize teacher_roles: if single role then return as human-friendly string,
-    // otherwise keep as array of role names.
-    let teacherRoleValue = null;
-    if (teacherRoles.length === 1) {
-      // convert role like 'wali_kelas' -> 'wali kelas' for display
-      teacherRoleValue = String(teacherRoles[0].role).replace(/_/g, ' ');
-    } else if (teacherRoles.length > 1) {
-      teacherRoleValue = teacherRoles.map(r => String(r.role).replace(/_/g, ' '));
-    }
+    // Derive homeroom class IDs from wali_kelas roles (single source of truth)
+    const homeroomClasses = teacherRoles
+      .filter(r => r.role === 'wali_kelas' && r.class_id != null)
+      .map(r => r.class_id);
 
-    // Normalize homeroom_classes: single value when one, array when many, null when none
-    let homeroomClassesValue = null;
-    if (Array.isArray(homeroomClasses)) {
-      if (homeroomClasses.length === 1) {
-        homeroomClassesValue = homeroomClasses[0];
-      } else if (homeroomClasses.length > 1) {
-        homeroomClassesValue = homeroomClasses;
-      } else {
-        homeroomClassesValue = null;
-      }
-    }
+    const homeroomClassesValue = homeroomClasses.length === 0 ? null
+      : homeroomClasses.length === 1 ? homeroomClasses[0]
+      : homeroomClasses;
 
-    // Build JWT payload for teacher (include roles and homeroom info)
+    // Build JWT payload for teacher — include full role objects so middleware
+    // can authorize wali_kelas actions without an extra DB lookup.
     const payload = {
       user_id: teacher.user_id,
       teacher_id: teacher.teacher_id,
       user_type: 'teacher',
       department: teacher.department,
-      teacher_roles: teacherRoleValue,
+      teacher_roles: teacherRoles,        // array of {role, class_id, class_name}
       homeroom_classes: homeroomClassesValue
     };
 
-    // Sign token
-    const token = jwt.sign(payload, process.env.JWT_SECRET || 'change_this_secret', { expiresIn: process.env.JWT_EXPIRE || '7d' });
+    // Sign token — teacher tokens follow the standard expiry policy
+    const teacherSignOptions = { expiresIn: process.env.JWT_TEACHER_EXPIRE || process.env.JWT_EXPIRE || '7d' };
+    const token = jwt.sign(payload, process.env.JWT_SECRET || 'change_this_secret', teacherSignOptions);
 
     res.json({
       success: true,
@@ -256,10 +372,8 @@ router.post('/login/guru', async (req, res) => {
         address: teacher.address,
         department: teacher.department,
         photo_profile: teacher.photo_profile,
-        device_id: teacher.device_id,
-        wifi_mac: teacher.wifi_mac,
         role: 'guru',
-        teacher_roles: teacherRoleValue,
+        teacher_roles: teacherRoles,       // [{role, class_id, class_name}]
         homeroom_classes: homeroomClassesValue,
         token // JWT for client to use in Authorization header
       }
@@ -289,7 +403,7 @@ router.post('/login/petugas', async (req, res) => {
     const petugasQuery = `
       SELECT id, username, password, created_at, updated_at
       FROM petugas_mbg
-      WHERE username COLLATE "C" = $1 COLLATE "C" AND deleted_at IS NULL
+      WHERE username COLLATE "C" = $1 COLLATE "C"
     `;
 
     const result = await pool.query(petugasQuery, [username]);
@@ -342,23 +456,27 @@ router.post('/login/petugas', async (req, res) => {
 // Login endpoint untuk Admin
 router.post('/login/admin', async (req, res) => {
   console.log('Login Admin request received:', req.body);
-  const { email, password } = req.body;
+  const { email, password, device_id } = req.body;
 
   try {
-    if (!email || !password) {
+    if (!email || !password || !device_id) {
       return res.status(400).json({
         success: false,
-        message: 'Email dan password harus diisi'
+        message: 'Email, password, dan device_id harus diisi'
       });
+    }
+
+    if (typeof device_id !== 'string' || device_id.length === 0 || device_id.length > 255) {
+      return res.status(400).json({ success: false, message: 'device_id harus string dengan panjang maksimal 255 karakter' });
     }
 
     const adminQuery = `
       SELECT 
         a.id as admin_id, a.name, a.nip, a.phone_number, a.photo_profile,
-        u.id as user_id, u.email, u.password, u.is_active, u.device_id, u.wifi_mac
+        u.id as user_id, u.email, u.password, u.is_active, u.device_id
       FROM admins a
       INNER JOIN users u ON a.user_id = u.id
-      WHERE u.email COLLATE "C" = $1 COLLATE "C" AND a.deleted_at IS NULL AND u.deleted_at IS NULL
+      WHERE u.email COLLATE "C" = $1 COLLATE "C"
     `;
 
     const result = await pool.query(adminQuery, [email]);
@@ -393,8 +511,34 @@ router.post('/login/admin', async (req, res) => {
       });
     }
 
-    await pool.query('UPDATE users SET last_login_at = NOW() WHERE id = $1', [admin.user_id]);
-    await pool.query('INSERT INTO history_login (user_id, login_at, status) VALUES ($1, NOW(), $2)', [admin.user_id, 'success']);
+    // Check if device_id differs - create device change request if so
+    if (admin.device_id && String(admin.device_id) !== String(device_id)) {
+      // Check if there's already a pending request
+      const existingRequestQuery = `
+        SELECT id, status FROM device_change_requests 
+        WHERE user_id = $1 AND status = 'pending' 
+        ORDER BY created_at DESC LIMIT 1
+      `;
+      const existingRequest = await pool.query(existingRequestQuery, [admin.user_id]);
+      
+      if (existingRequest.rows.length === 0) {
+        // Create new device change request
+        await pool.query(
+          `INSERT INTO device_change_requests (user_id, device_id_old, device_id_new, status, submitted_by, created_at, updated_at) 
+           VALUES ($1, $2, $3, 'pending', $4, NOW(), NOW())`,
+          [admin.user_id, admin.device_id, device_id, email]
+        );
+      }
+      
+      return res.status(403).json({
+        success: false,
+        message: 'mohon maaf untuk akun yang anda loginkan sudah pernah login di device yang berbeda sebelumnya. Pengajuan pergantian perangkat sudah dibuat, mohon tunggu konfirmasi.',
+        device_change_pending: true
+      });
+    }
+
+    await pool.query('UPDATE users SET last_login_at = NOW(), device_id = $2 WHERE id = $1', [admin.user_id, device_id]);
+    await pool.query('INSERT INTO history_login (user_id, login_at, status, device_id) VALUES ($1, NOW(), $2, $3)', [admin.user_id, 'success', device_id]);
 
     delete admin.password;
 
@@ -409,8 +553,7 @@ router.post('/login/admin', async (req, res) => {
         nip: admin.nip,
         phone_number: admin.phone_number,
         photo_profile: admin.photo_profile,
-        device_id: admin.device_id,
-        wifi_mac: admin.wifi_mac,
+        device_id: device_id,
         role: 'admin'
       }
     });

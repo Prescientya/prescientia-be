@@ -84,8 +84,7 @@ router.get('/attendance/today', requireStudent, async (req, res) => {
         ORDER BY created_at DESC
         LIMIT 1
       ) sa ON true
-      WHERE s.class_id = $1 
-        AND s.deleted_at IS NULL
+      WHERE s.class_id = $1
       ORDER BY s.id, s.name
     `;
     
@@ -251,7 +250,7 @@ router.post('/attendance/batch-submit', requireStudent, async (req, res) => {
         
         // Cek apakah student ada di kelas tersebut
         const studentCheck = await client.query(
-          'SELECT id FROM students WHERE id = $1 AND class_id = $2 AND deleted_at IS NULL',
+          'SELECT id FROM students WHERE id = $1 AND class_id = $2',
           [student_id, class_id]
         );
         

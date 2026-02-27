@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
+const { requireTeacher } = require('../middlewares/auth.middleware');
 
 // ==================== TEACHER ATTENDANCES CRUD ====================
 
@@ -319,82 +320,151 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-// APP: teacher login -> create attendance if not exists (used when teacher opens the app)
-router.post('/app/login', async (req, res) => {
+// APP: teacher check-in attendance (for already-authenticated teacher)
+// Requires JWT via requireTeacher — teacher_id is taken from verified token.
+// Automatically resolves today's school_calendar; no calendar_id needed in body.
+// Route: POST /api/teacher-attendances/app/login
+router.post('/app/login', requireTeacher, async (req, res) => {
   try {
-    const { teacher_id, calendar_id, source = 'digital_wifi', check_in_time } = req.body;
+    const teacher_id = req.user.teacher_id;
+    const { source = 'digital_wifi', check_in_time } = req.body;
 
-    if (!teacher_id || !calendar_id) {
-      return res.status(400).json({ success: false, message: 'teacher_id dan calendar_id harus diisi' });
+    // Validate source
+    const validSources = ['digital_wifi', 'manual', 'self_report'];
+    if (!validSources.includes(source)) {
+      return res.status(400).json({
+        success: false,
+        message: `Source tidak valid. Harus salah satu dari: ${validSources.join(', ')}`
+      });
     }
 
-    if (!['digital_wifi', 'guru_pengajar', 'wali_kelas', 'self_report', 'manual'].includes(source)) {
-      return res.status(400).json({ success: false, message: 'Source tidak valid' });
+    // Auto-resolve today's school_calendar entry
+    const calendarResult = await pool.query(
+      `SELECT id, date, status, notes FROM school_calendar WHERE date = CURRENT_DATE LIMIT 1`
+    );
+
+    if (calendarResult.rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Hari ini tidak terdaftar di kalender sekolah. Absensi tidak dapat dilakukan.'
+      });
     }
 
-    // Check existing attendance (unique constraint teacher_id + calendar_id if exists)
-    const existQ = 'SELECT * FROM teacher_attendances WHERE teacher_id = $1 AND calendar_id = $2 LIMIT 1';
-    const existR = await pool.query(existQ, [teacher_id, calendar_id]);
-    if (existR.rows.length > 0) {
-      // If exists, return it (optionally update check_in_time if missing)
-      const existing = existR.rows[0];
-      if (!existing.check_in_time && check_in_time) {
-        const upd = await pool.query('UPDATE teacher_attendances SET check_in_time = $1, updated_at = NOW() WHERE id = $2 RETURNING *', [check_in_time, existing.id]);
-        return res.json({ success: true, message: 'Teacher attendance updated (check_in_time)', data: upd.rows[0] });
-      }
-      return res.json({ success: true, message: 'Teacher attendance sudah ada', data: existing });
+    const calendar = calendarResult.rows[0];
+    if (calendar.status === 'libur') {
+      return res.status(400).json({
+        success: false,
+        message: `Hari ini adalah hari libur${calendar.notes ? ': ' + calendar.notes : ''}. Absensi tidak dapat dilakukan.`
+      });
     }
 
-    // default status to 'hadir'
-    const status = 'hadir';
+    const calendar_id = calendar.id;
     const inTime = check_in_time || new Date().toISOString();
 
-    const insertQ = `
-      INSERT INTO teacher_attendances (teacher_id, calendar_id, check_in_time, status, source, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
-      RETURNING *
-    `;
-    const insertR = await pool.query(insertQ, [teacher_id, calendar_id, inTime, status, source]);
-    return res.status(201).json({ success: true, message: 'Teacher attendance created (login)', data: insertR.rows[0] });
+    // Check if attendance for today already exists
+    const existResult = await pool.query(
+      'SELECT * FROM teacher_attendances WHERE teacher_id = $1 AND calendar_id = $2 LIMIT 1',
+      [teacher_id, calendar_id]
+    );
+
+    if (existResult.rows.length > 0) {
+      const existing = existResult.rows[0];
+      // If already checked in, just return the existing record
+      if (existing.check_in_time) {
+        return res.json({
+          success: true,
+          message: 'Anda sudah melakukan absen masuk hari ini',
+          data: existing
+        });
+      }
+      // Fill in check_in_time if it was missing
+      const updated = await pool.query(
+        'UPDATE teacher_attendances SET check_in_time = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
+        [inTime, existing.id]
+      );
+      return res.json({
+        success: true,
+        message: 'Absen masuk berhasil dicatat',
+        data: updated.rows[0]
+      });
+    }
+
+    // Insert new attendance record
+    const insertResult = await pool.query(
+      `INSERT INTO teacher_attendances (teacher_id, calendar_id, check_in_time, status, source, created_at, updated_at)
+       VALUES ($1, $2, $3, 'hadir', $4, NOW(), NOW())
+       RETURNING *`,
+      [teacher_id, calendar_id, inTime, source]
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: 'Absen masuk berhasil dicatat',
+      data: insertResult.rows[0]
+    });
   } catch (error) {
-    console.error('Error in app login attendance:', error);
-    return res.status(500).json({ success: false, message: 'Terjadi kesalahan saat membuat attendance (login)', error: error.message });
+    console.error('Error in app/login attendance:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Terjadi kesalahan saat mencatat absen masuk',
+      error: error.message
+    });
   }
 });
 
-// APP: teacher logout -> update check_out_time (used when teacher closes the app)
-// Route: PATCH /api/teacher-attendances/app/logout/:teacher_id
-router.patch('/app/logout/:teacher_id', async (req, res) => {
+// APP: teacher check-out attendance (for already-authenticated teacher)
+// Requires JWT via requireTeacher — teacher_id is taken from verified token.
+// Automatically resolves today's school_calendar; no calendar_id needed in body.
+// Route: PATCH /api/teacher-attendances/app/logout
+router.patch('/app/logout', requireTeacher, async (req, res) => {
   try {
-    const { teacher_id } = req.params;
-    const { calendar_id, check_out_time } = req.body || {};
+    const teacher_id = req.user.teacher_id;
+    const { check_out_time } = req.body || {};
 
-    if (!teacher_id) {
-      return res.status(400).json({ success: false, message: 'teacher_id harus diisi di URL path' });
+    // Auto-resolve today's school_calendar entry
+    const calendarResult = await pool.query(
+      `SELECT id FROM school_calendar WHERE date = CURRENT_DATE LIMIT 1`
+    );
+
+    if (calendarResult.rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Hari ini tidak terdaftar di kalender sekolah.'
+      });
     }
 
-    if (!calendar_id) {
-      return res.status(400).json({ success: false, message: 'calendar_id harus diisi di request body' });
+    const calendar_id = calendarResult.rows[0].id;
+
+    const findResult = await pool.query(
+      'SELECT id FROM teacher_attendances WHERE teacher_id = $1 AND calendar_id = $2 LIMIT 1',
+      [teacher_id, calendar_id]
+    );
+
+    if (findResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Belum ada catatan absen masuk untuk hari ini. Lakukan absen masuk terlebih dahulu.'
+      });
     }
 
-    // Find attendance by teacher_id + calendar_id
-    const findQ = 'SELECT id FROM teacher_attendances WHERE teacher_id = $1 AND calendar_id = $2 LIMIT 1';
-    const findR = await pool.query(findQ, [teacher_id, calendar_id]);
-    if (findR.rows.length === 0) {
-      return res.status(404).json({ success: false, message: 'Attendance tidak ditemukan untuk teacher_id + calendar_id tersebut' });
-    }
-
-    const attendanceId = findR.rows[0].id;
     const outTime = check_out_time || new Date().toISOString();
-    const updQ = 'UPDATE teacher_attendances SET check_out_time = $1, updated_at = NOW() WHERE id = $2 RETURNING *';
-    const updR = await pool.query(updQ, [outTime, attendanceId]);
-    if (updR.rows.length === 0) {
-      return res.status(404).json({ success: false, message: 'Attendance tidak ditemukan' });
-    }
-    return res.json({ success: true, message: 'Teacher attendance updated (logout)', data: updR.rows[0] });
+    const updated = await pool.query(
+      'UPDATE teacher_attendances SET check_out_time = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
+      [outTime, findResult.rows[0].id]
+    );
+
+    return res.json({
+      success: true,
+      message: 'Absen keluar berhasil dicatat',
+      data: updated.rows[0]
+    });
   } catch (error) {
-    console.error('Error in app logout attendance:', error);
-    return res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengupdate attendance (logout)', error: error.message });
+    console.error('Error in app/logout attendance:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Terjadi kesalahan saat mencatat absen keluar',
+      error: error.message
+    });
   }
 });
 

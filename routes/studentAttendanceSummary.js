@@ -146,7 +146,7 @@ router.post('/', async (req, res) => {
     
     // Cek student exists
     const checkStudent = await pool.query(
-      'SELECT id FROM students WHERE id = $1 AND deleted_at IS NULL',
+      'SELECT id FROM students WHERE id = $1',
       [student_id]
     );
     if (checkStudent.rows.length === 0) {

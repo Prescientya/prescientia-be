@@ -16,7 +16,7 @@ router.get('/', async (req, res) => {
              a.created_at, a.updated_at, u.email, u.is_active
       FROM admins a
       INNER JOIN users u ON a.user_id = u.id
-      WHERE a.deleted_at IS NULL
+      WHERE 1=1
       ORDER BY a.created_at DESC
       LIMIT $1 OFFSET $2
     `;
@@ -24,7 +24,7 @@ router.get('/', async (req, res) => {
     const result = await pool.query(query, [limit, offset]);
     
     const countResult = await pool.query(
-      'SELECT COUNT(*) FROM admins WHERE deleted_at IS NULL'
+      'SELECT COUNT(*) FROM admins WHERE 1=1'
     );
     
     res.json({
@@ -58,7 +58,7 @@ router.get('/:id', async (req, res) => {
              a.created_at, a.updated_at, u.email, u.is_active
       FROM admins a
       INNER JOIN users u ON a.user_id = u.id
-      WHERE a.id = $1 AND a.deleted_at IS NULL
+      WHERE a.id = $1
     `;
     
     const result = await pool.query(query, [id]);
@@ -95,7 +95,7 @@ router.patch('/:id', async (req, res) => {
     
     // Cek apakah admin ada
     const checkAdmin = await pool.query(
-      'SELECT id FROM admins WHERE id = $1 AND deleted_at IS NULL',
+      'SELECT id FROM admins WHERE id = $1',
       [id]
     );
     
@@ -134,7 +134,7 @@ router.patch('/:id', async (req, res) => {
       paramIndex++;
     }
     
-    query += ` WHERE id = $${paramIndex} AND deleted_at IS NULL
+    query += ` WHERE id = $${paramIndex}
       RETURNING id, user_id, name, nip, phone_number, photo_profile, created_at, updated_at`;
     params.push(id);
     

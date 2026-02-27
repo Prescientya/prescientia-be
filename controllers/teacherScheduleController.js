@@ -1,38 +1,48 @@
 const pool = require('../config/database');
 
 /**
- * GET /api/teacher/today-classes
- * 
- * Returns real-time list of all classes a teacher teaches TODAY,
- * including lesson periods and attendance status per period.
- * 
- * Authentication: Requires JWT token with teacher_id
- * 
- * Response:
- * {
- *   "success": true,
- *   "message": "...",
- *   "data": {
- *     "day": "senin",
- *     "teacher_id": 73,
- *     "schedules": [
- *       {
- *         "class_id": 5,
- *         "class_name": "X RPL 1",
- *         "subject_id": 92,
- *         "subject_name": "Matematika",
- *         "period_id": 134,
- *         "start_time": "07:15:00",
- *         "end_time": "07:55:00",
- *         "is_submitted": false
- *       }
- *     ]
- *   }
- * }
+ * Helper: convert numeric grade (10/11/12) to Roman numeral string used in class names.
+ * Used inside SQL CASE expressions and in JS formatting.
  */
-const getTodayClasses = async (req, res) => {
+function gradeToRoman(grade) {
+  switch (Number(grade)) {
+    case 10: return 'X';
+    case 11: return 'XI';
+    case 12: return 'XII';
+    default: return String(grade);
+  }
+}
+
+/**
+ * SQL fragment: formats class name as "X RPL 1" (Roman grade + major).
+ * @param {string} classAlias - table alias for the classes table (e.g. 'c')
+ */
+function classNameSQL(classAlias) {
+  return `(CASE ${classAlias}.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
+           ELSE ${classAlias}.class::text END || ' ' || COALESCE(${classAlias}.major::text, ''))`;
+}
+
+
+/**
+ * POST /api/teachers/submit-period
+ *
+ * Teacher submits evidence of teaching for a specific period TODAY.
+ * Uses UPSERT so the same period can be re-submitted each week
+ * (the unique DB constraint has no date, so we overwrite the last record).
+ *
+ * Body:
+ * {
+ *   "class_id":   <number>   (required)
+ *   "subject_id": <number>   (required)
+ *   "period_id":  <number>   (required)
+ *   "photo_url":  <string>   (required)
+ *   "is_present": <boolean>  (optional, default true)
+ * }
+ *
+ * Requires: Authorization: Bearer <teacher-JWT>
+ */
+const submitTeacherPeriod = async (req, res) => {
   try {
-    // Extract teacher_id from authenticated user (populated by requireTeacher middleware)
     const teacherId = req.user && Number(req.user.teacher_id);
     if (!teacherId || isNaN(teacherId)) {
       return res.status(401).json({
@@ -41,137 +51,80 @@ const getTodayClasses = async (req, res) => {
       });
     }
 
-    // Get current day in Indonesian format
-    const daysIndonesian = ['minggu', 'senin', 'selasa', 'rabu', 'kamis', 'jumat', 'sabtu'];
-    const todayIndex = new Date().getDay();
-    const todayDay = daysIndonesian[todayIndex];
+    const { class_id, subject_id, period_id, photo_url, is_present = true } = req.body;
 
-    // If today is weekend (minggu/sabtu), return empty schedule
-    if (todayDay === 'minggu' || todayDay === 'sabtu') {
-      return res.json({
-        success: true,
-        message: 'Tidak ada jadwal mengajar pada hari ini',
-        data: {
-          day: todayDay,
-          teacher_id: teacherId,
-          schedules: []
-        }
+    if (!class_id || !subject_id || !period_id || !photo_url) {
+      return res.status(400).json({
+        success: false,
+        message: 'class_id, subject_id, period_id, dan photo_url harus diisi'
       });
     }
 
-    // Query to get today's schedule with attendance submission status
-    const query = `
-      SELECT 
-        tcs.class_id,
-        (COALESCE(c.major::text, '') || ' ' || COALESCE(c.class::text, '')) AS class_name,
-        tcs.subject_id,
-        s.name AS subject_name,
-        tcs.period_id,
-        cp.start_time,
-        cp.end_time,
-        cp.sequence,
-        EXISTS (
-          SELECT 1 
-          FROM submit_teacher_periods stp
-          WHERE stp.teacher_id = tcs.teacher_id
-            AND stp.class_id = tcs.class_id
-            AND stp.subject_id = tcs.subject_id
-            AND stp.period_id = tcs.period_id
-            AND stp.day = tcs.day
-        ) AS is_submitted
-      FROM teacher_class_schedules tcs
-      INNER JOIN classes c ON c.id = tcs.class_id
-      INNER JOIN subjects s ON s.id = tcs.subject_id
-      INNER JOIN class_periods cp ON cp.id = tcs.period_id
-      WHERE tcs.teacher_id = $1
-        AND tcs.day = $2
-      ORDER BY cp.sequence ASC, tcs.class_id ASC
+    if (typeof photo_url !== 'string' || photo_url.trim() === '') {
+      return res.status(400).json({ success: false, message: 'photo_url harus berupa string URL yang valid' });
+    }
+
+    // Derive today's day name in Indonesian
+    const daysIndonesian = ['minggu', 'senin', 'selasa', 'rabu', 'kamis', 'jumat', 'sabtu'];
+    const todayDay = daysIndonesian[new Date().getDay()];
+
+    if (todayDay === 'minggu' || todayDay === 'sabtu') {
+      return res.status(400).json({ success: false, message: 'Tidak dapat submit absensi pada hari libur' });
+    }
+
+    // Validate that teacher actually has this period scheduled today
+    const scheduleCheck = await pool.query(
+      `SELECT id FROM teacher_class_schedules
+       WHERE teacher_id = $1 AND class_id = $2
+         AND subject_id = $3 AND period_id = $4
+         AND day = $5
+       LIMIT 1`,
+      [teacherId, class_id, subject_id, period_id, todayDay]
+    );
+
+    if (scheduleCheck.rows.length === 0) {
+      return res.status(403).json({
+        success: false,
+        message: 'Anda tidak memiliki jadwal mengajar untuk periode ini hari ini'
+      });
+    }
+
+    // Check today's school calendar is active
+    const calendarCheck = await pool.query(
+      `SELECT id, status FROM school_calendar WHERE date = CURRENT_DATE LIMIT 1`
+    );
+    if (calendarCheck.rows.length === 0 || calendarCheck.rows[0].status === 'libur') {
+      return res.status(400).json({ success: false, message: 'Tidak dapat submit absensi pada hari libur kalender' });
+    }
+
+    // UPSERT — the unique key has no date column so we overwrite the existing row
+    // each week. submitted_at captures the exact timestamp.
+    const upsertQuery = `
+      INSERT INTO submit_teacher_periods
+        (teacher_id, class_id, subject_id, period_id, day, photo_url, is_present, submitted_at, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW(), NOW())
+      ON CONFLICT (teacher_id, class_id, subject_id, period_id, day)
+      DO UPDATE SET
+        photo_url    = EXCLUDED.photo_url,
+        is_present   = EXCLUDED.is_present,
+        submitted_at = NOW(),
+        updated_at   = NOW()
+      RETURNING *
     `;
 
-    const result = await pool.query(query, [teacherId, todayDay]);
+    const result = await pool.query(upsertQuery, [
+      teacherId, class_id, subject_id, period_id, todayDay,
+      photo_url.trim(), Boolean(is_present)
+    ]);
 
-    // Get unique class IDs from schedules
-    const classIds = [...new Set(result.rows.map(row => row.class_id))];
-
-    // Get students with attendance status for today for each class
-    let studentsData = [];
-    if (classIds.length > 0) {
-      const studentsQuery = `
-        SELECT 
-          st.id as student_id,
-          st.nis,
-          st.name as student_name,
-          st.class_id,
-          st.gender,
-          st.photo_profile,
-          sa.id as attendance_id,
-          sa.status as attendance_status,
-          sa.check_in_time,
-          sa.check_out_time,
-          sc.date as attendance_date
-        FROM students st
-        LEFT JOIN student_attendances sa ON st.id = sa.student_id 
-          AND sa.class_id = st.class_id
-          AND DATE(sa.check_in_time) = CURRENT_DATE
-        LEFT JOIN school_calendar sc ON sa.calendar_id = sc.id
-        WHERE st.class_id = ANY($1)
-          AND st.deleted_at IS NULL
-        ORDER BY st.class_id ASC, st.name ASC
-      `;
-      
-      const studentsResult = await pool.query(studentsQuery, [classIds]);
-      studentsData = studentsResult.rows;
-    }
-
-    // Group students by class_id
-    const studentsByClass = {};
-    studentsData.forEach(student => {
-      if (!studentsByClass[student.class_id]) {
-        studentsByClass[student.class_id] = [];
-      }
-      studentsByClass[student.class_id].push({
-        student_id: student.student_id,
-        nis: student.nis,
-        name: student.student_name,
-        gender: student.gender,
-        photo_profile: student.photo_profile,
-        attendance: student.attendance_id ? {
-          attendance_id: student.attendance_id,
-          status: student.attendance_status,
-          check_in_time: student.check_in_time,
-          check_out_time: student.check_out_time,
-          date: student.attendance_date
-        } : null
-      });
-    });
-
-    // Format the response with students
-    const schedules = result.rows.map(row => ({
-      class_id: row.class_id,
-      class_name: row.class_name,
-      subject_id: row.subject_id,
-      subject_name: row.subject_name,
-      period_id: row.period_id,
-      start_time: row.start_time,
-      end_time: row.end_time,
-      is_submitted: row.is_submitted,
-      students: studentsByClass[row.class_id] || [],
-      total_students: (studentsByClass[row.class_id] || []).length,
-      present_students: (studentsByClass[row.class_id] || []).filter(s => s.attendance && s.attendance.status === 'hadir').length
-    }));
-
-    res.json({
+    res.status(200).json({
       success: true,
-      message: `Jadwal mengajar hari ${todayDay} berhasil diambil`,
-      data: {
-        day: todayDay,
-        teacher_id: teacherId,
-        schedules: schedules
-      }
+      message: 'Absensi periode berhasil disubmit',
+      data: result.rows[0]
     });
 
   } catch (error) {
-    console.error('getTodayClasses error:', error);
+    console.error('submitTeacherPeriod error:', error);
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan pada server',
@@ -181,38 +134,16 @@ const getTodayClasses = async (req, res) => {
 };
 
 /**
- * GET /api/teachers/my-classes
- * 
- * Returns all classes taught by authenticated teacher grouped by class and subject.
- * Shows which days teacher teaches each class-subject combination.
- * 
- * Authentication: Requires JWT token with teacher_id
- * 
- * Response:
- * {
- *   "success": true,
- *   "data": {
- *     "teacher_id": 85,
- *     "classes": [
- *       {
- *         "class_id": 16,
- *         "class_name": "X RPL 1",
- *         "subjects": [
- *           {
- *             "subject_id": 86,
- *             "subject_name": "Matematika",
- *             "days": ["senin"],
- *             "total_periods": 2
- *           }
- *         ]
- *       }
- *     ]
- *   }
- * }
+ * GET /api/teachers/schedule/classes
+ *
+ * Returns ALL classes taught by the authenticated teacher (from teacher_schedules),
+ * grouped by class → subject → schedule days.
+ * Day info is derived from class_periods.day.
+ *
+ * Requires: Authorization: Bearer <teacher-JWT>
  */
-const getMyClasses = async (req, res) => {
+const getScheduleClasses = async (req, res) => {
   try {
-    // Extract teacher_id from authenticated user
     const teacherId = req.user && Number(req.user.teacher_id);
     if (!teacherId || isNaN(teacherId)) {
       return res.status(401).json({
@@ -221,45 +152,42 @@ const getMyClasses = async (req, res) => {
       });
     }
 
-    // Query to get all classes taught by teacher with subject details
     const query = `
-      SELECT 
-        tcs.class_id,
-        (COALESCE(c.major::text, '') || ' ' || COALESCE(c.class::text, '')) AS class_name,
-        c.class as grade,
+      SELECT
+        ts.class_id,
+        ${classNameSQL('c')} AS class_name,
+        c.class  AS grade,
         c.major,
-        tcs.subject_id,
-        s.name AS subject_name,
-        tcs.day,
-        COUNT(tcs.period_id) as period_count,
-        tcs.semester
-      FROM teacher_class_schedules tcs
-      INNER JOIN classes c ON c.id = tcs.class_id
-      INNER JOIN subjects s ON s.id = tcs.subject_id
-      WHERE tcs.teacher_id = $1
-      GROUP BY tcs.class_id, c.major, c.class, tcs.subject_id, s.name, tcs.day, tcs.semester
-      ORDER BY tcs.class_id ASC, tcs.subject_id ASC, 
-        CASE tcs.day 
-          WHEN 'senin' THEN 1 
-          WHEN 'selasa' THEN 2 
-          WHEN 'rabu' THEN 3 
-          WHEN 'kamis' THEN 4 
-          WHEN 'jumat' THEN 5 
-        END
+        ts.subject_id,
+        s.name   AS subject_name,
+        cp.day,
+        cp.id    AS period_id,
+        cp.start_time,
+        cp.end_time,
+        cp.sequence,
+        cp.activity_type
+      FROM teacher_schedules ts
+      INNER JOIN classes      c  ON c.id  = ts.class_id
+      INNER JOIN subjects     s  ON s.id  = ts.subject_id
+      INNER JOIN class_periods cp ON cp.id = ts.class_period_id
+      WHERE ts.teacher_id = $1
+      ORDER BY
+        ts.class_id ASC,
+        ts.subject_id ASC,
+        CASE cp.day
+          WHEN 'senin'  THEN 1 WHEN 'selasa' THEN 2 WHEN 'rabu'   THEN 3
+          WHEN 'kamis'  THEN 4 WHEN 'jumat'  THEN 5 ELSE 6
+        END,
+        cp.sequence ASC
     `;
 
     const result = await pool.query(query, [teacherId]);
 
-    // Group data by class and subject
+    // Group: class → subject → schedule (days + times)
     const classesMap = new Map();
-
     result.rows.forEach(row => {
-      const classKey = row.class_id;
-      const subjectKey = row.subject_id;
-
-      // Initialize class if not exists
-      if (!classesMap.has(classKey)) {
-        classesMap.set(classKey, {
+      if (!classesMap.has(row.class_id)) {
+        classesMap.set(row.class_id, {
           class_id: row.class_id,
           class_name: row.class_name.trim(),
           grade: row.grade,
@@ -267,32 +195,34 @@ const getMyClasses = async (req, res) => {
           subjects: new Map()
         });
       }
+      const cls = classesMap.get(row.class_id);
 
-      const classData = classesMap.get(classKey);
-
-      // Initialize subject if not exists
-      if (!classData.subjects.has(subjectKey)) {
-        classData.subjects.set(subjectKey, {
+      if (!cls.subjects.has(row.subject_id)) {
+        cls.subjects.set(row.subject_id, {
           subject_id: row.subject_id,
           subject_name: row.subject_name,
-          days: [],
-          total_periods: 0,
-          semester: row.semester
+          schedule: []
         });
       }
-
-      const subjectData = classData.subjects.get(subjectKey);
-      subjectData.days.push(row.day);
-      subjectData.total_periods += row.period_count;
+      cls.subjects.get(row.subject_id).schedule.push({
+        period_id: row.period_id,
+        day: row.day,
+        sequence: row.sequence,
+        start_time: row.start_time,
+        end_time: row.end_time,
+        activity_type: row.activity_type
+      });
     });
 
-    // Convert maps to arrays
-    const classes = Array.from(classesMap.values()).map(classData => ({
-      class_id: classData.class_id,
-      class_name: classData.class_name,
-      grade: classData.grade,
-      major: classData.major,
-      subjects: Array.from(classData.subjects.values())
+    const classes = Array.from(classesMap.values()).map(c => ({
+      class_id: c.class_id,
+      class_name: c.class_name,
+      grade: c.grade,
+      major: c.major,
+      subjects: Array.from(c.subjects.values()).map(sub => ({
+        ...sub,
+        total_periods: sub.schedule.length
+      }))
     }));
 
     res.json({
@@ -301,12 +231,146 @@ const getMyClasses = async (req, res) => {
       data: {
         teacher_id: teacherId,
         total_classes: classes.length,
-        classes: classes
+        classes
       }
     });
 
   } catch (error) {
-    console.error('getMyClasses error:', error);
+    console.error('getScheduleClasses error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Terjadi kesalahan pada server',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * GET /api/teachers/schedule/today
+ *
+ * Returns the teacher's schedule for TODAY from teacher_schedules,
+ * with submission status and holiday guard via school_calendar.
+ *
+ * Requires: Authorization: Bearer <teacher-JWT>
+ */
+const getScheduleToday = async (req, res) => {
+  try {
+    const teacherId = req.user && Number(req.user.teacher_id);
+    if (!teacherId || isNaN(teacherId)) {
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized: teacher_id tidak ditemukan di token'
+      });
+    }
+
+    const daysIndonesian = ['minggu', 'senin', 'selasa', 'rabu', 'kamis', 'jumat', 'sabtu'];
+    const todayDay = daysIndonesian[new Date().getDay()];
+
+    if (todayDay === 'minggu' || todayDay === 'sabtu') {
+      return res.json({
+        success: true,
+        message: 'Tidak ada jadwal mengajar pada hari ini',
+        data: { day: todayDay, teacher_id: teacherId, calendar: null, schedules: [] }
+      });
+    }
+
+    // Check today's school calendar
+    const calendarResult = await pool.query(
+      `SELECT id, date, status, notes FROM school_calendar WHERE date = CURRENT_DATE LIMIT 1`
+    );
+
+    if (calendarResult.rows.length === 0) {
+      return res.json({
+        success: true,
+        message: 'Hari ini tidak terdaftar di kalender sekolah',
+        data: { day: todayDay, teacher_id: teacherId, calendar: null, schedules: [] }
+      });
+    }
+
+    const calendarRow = calendarResult.rows[0];
+    if (calendarRow.status === 'libur') {
+      return res.json({
+        success: true,
+        message: `Hari ini adalah hari libur${calendarRow.notes ? ': ' + calendarRow.notes : ''}`,
+        data: {
+          day: todayDay,
+          teacher_id: teacherId,
+          calendar: { id: calendarRow.id, date: calendarRow.date, status: calendarRow.status, notes: calendarRow.notes },
+          schedules: []
+        }
+      });
+    }
+
+    const scheduleQuery = `
+      SELECT
+        ts.id        AS schedule_id,
+        ts.class_id,
+        ${classNameSQL('c')} AS class_name,
+        c.class  AS grade,
+        c.major,
+        ts.subject_id,
+        s.name   AS subject_name,
+        cp.id    AS period_id,
+        cp.start_time,
+        cp.end_time,
+        cp.sequence,
+        cp.activity_type,
+        EXISTS (
+          SELECT 1
+          FROM submit_teacher_periods stp
+          WHERE stp.teacher_id  = ts.teacher_id
+            AND stp.class_id    = ts.class_id
+            AND stp.subject_id  = ts.subject_id
+            AND stp.period_id   = ts.class_period_id
+            AND stp.day         = cp.day
+            AND DATE(stp.submitted_at AT TIME ZONE 'Asia/Jakarta') = CURRENT_DATE
+        ) AS is_submitted
+      FROM teacher_schedules ts
+      INNER JOIN classes      c  ON c.id  = ts.class_id
+      INNER JOIN subjects     s  ON s.id  = ts.subject_id
+      INNER JOIN class_periods cp ON cp.id = ts.class_period_id
+      WHERE ts.teacher_id = $1
+        AND cp.day = $2
+      ORDER BY cp.sequence ASC, ts.class_id ASC
+    `;
+
+    const scheduleResult = await pool.query(scheduleQuery, [teacherId, todayDay]);
+
+    const schedules = scheduleResult.rows.map(row => ({
+      schedule_id: row.schedule_id,
+      class_id: row.class_id,
+      class_name: row.class_name.trim(),
+      grade: row.grade,
+      major: row.major,
+      subject_id: row.subject_id,
+      subject_name: row.subject_name,
+      period_id: row.period_id,
+      start_time: row.start_time,
+      end_time: row.end_time,
+      sequence: row.sequence,
+      activity_type: row.activity_type,
+      is_submitted: row.is_submitted
+    }));
+
+    res.json({
+      success: true,
+      message: `Ditemukan ${schedules.length} jadwal mengajar hari ${todayDay}`,
+      data: {
+        day: todayDay,
+        teacher_id: teacherId,
+        calendar: {
+          id: calendarRow.id,
+          date: calendarRow.date,
+          status: calendarRow.status,
+          notes: calendarRow.notes
+        },
+        total_schedules: schedules.length,
+        schedules
+      }
+    });
+
+  } catch (error) {
+    console.error('getScheduleToday error:', error);
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan pada server',
@@ -316,6 +380,8 @@ const getMyClasses = async (req, res) => {
 };
 
 module.exports = {
-  getTodayClasses,
-  getMyClasses
+  submitTeacherPeriod,
+  getScheduleClasses,
+  getScheduleToday
 };
+

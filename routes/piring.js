@@ -81,7 +81,7 @@ router.post('/create', async (req, res) => {
       }
       finalStok = parsed;
     } else {
-      const totalQuery = `SELECT COUNT(*) as total_siswa FROM students WHERE deleted_at IS NULL`;
+      const totalQuery = `SELECT COUNT(*) as total_siswa FROM students`;
       const totalResult = await pool.query(totalQuery);
       totalSiswaReference = totalResult.rows[0].total_siswa;
       finalStok = totalSiswaReference;
@@ -244,7 +244,7 @@ router.post('/daily/create', async (req, res) => {
       try {
         const studentCheckQuery = `
           SELECT id, name FROM students
-          WHERE name = $1 AND class_id = $2 AND (deleted_at IS NULL)
+          WHERE name = $1 AND class_id = $2
           LIMIT 1
         `;
         const studentCheck = await pool.query(studentCheckQuery, [student_representative, class_id]);
@@ -497,7 +497,7 @@ router.get('/class-summary/date/:date', async (req, res) => {
         mcd_latest.student_representative,
         mcd_latest.created_at as daily_created_at
       FROM classes c
-      LEFT JOIN students s ON c.id = s.class_id AND s.deleted_at IS NULL
+      LEFT JOIN students s ON c.id = s.class_id
       LEFT JOIN student_attendances sa ON s.id = sa.student_id AND DATE(sa.check_in_time) = DATE($1)
       LEFT JOIN LATERAL (
         SELECT * FROM mbg_class_daily 

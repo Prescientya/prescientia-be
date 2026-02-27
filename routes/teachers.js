@@ -7,11 +7,14 @@ const teacherScheduleController = require('../controllers/teacherScheduleControl
 
 // ==================== TEACHER SCHEDULE ENDPOINTS ====================
 
-// GET today's classes for authenticated teacher
-router.get('/today-classes', requireTeacher, teacherScheduleController.getTodayClasses);
+// POST submit teaching evidence for a specific period today (UPSERT)
+router.post('/submit-period', requireTeacher, teacherScheduleController.submitTeacherPeriod);
 
-// GET all classes taught by authenticated teacher (grouped by class and subject)
-router.get('/my-classes', requireTeacher, teacherScheduleController.getMyClasses);
+// GET all distinct classes taught by authenticated teacher (from teacher_schedules)
+router.get('/schedule/classes', requireTeacher, teacherScheduleController.getScheduleClasses);
+
+// GET classes the authenticated teacher must teach today (from teacher_schedules)
+router.get('/schedule/today', requireTeacher, teacherScheduleController.getScheduleToday);
 
 // ==================== TEACHERS CRUD ====================
 
@@ -27,7 +30,7 @@ router.get('/', async (req, res) => {
              t.created_at, t.updated_at, u.email, u.is_active
       FROM teachers t
       INNER JOIN users u ON t.user_id = u.id
-      WHERE t.deleted_at IS NULL
+      WHERE 1=1
     `;
     const params = [];
     let paramIndex = 1;
@@ -50,7 +53,7 @@ router.get('/', async (req, res) => {
     const result = await pool.query(query, params);
     
     // Count query
-    let countQuery = 'SELECT COUNT(*) FROM teachers WHERE deleted_at IS NULL';
+    let countQuery = 'SELECT COUNT(*) FROM teachers WHERE 1=1';
     const countParams = [];
     let countParamIndex = 1;
     
@@ -88,29 +91,32 @@ router.get('/', async (req, res) => {
   }
 });
 
-// GET teacher by ID
-router.get('/:id', async (req, res) => {
+// GET teacher by ID (only numeric IDs)
+router.get('/:id(\\d+)', async (req, res) => {
   try {
-    const { id } = req.params;
-    
+    const id = parseInt(req.params.id, 10);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ success: false, message: 'Invalid teacher id' });
+    }
+
     const query = `
       SELECT t.id, t.user_id, t.nip, t.name, t.gender, t.date_of_birth,
              t.phone_number, t.address, t.department, t.photo_profile,
              t.created_at, t.updated_at, u.email, u.is_active
       FROM teachers t
       INNER JOIN users u ON t.user_id = u.id
-      WHERE t.id = $1 AND t.deleted_at IS NULL
+      WHERE t.id = $1
     `;
-    
+
     const result = await pool.query(query, [id]);
-    
+
     if (result.rows.length === 0) {
       return res.status(404).json({
         success: false,
         message: 'Teacher tidak ditemukan'
       });
     }
-    
+
     res.json({
       success: true,
       message: 'Data teacher berhasil diambil',
@@ -156,7 +162,7 @@ router.post('/', async (req, res) => {
     
     // Cek email duplicate
     const checkEmail = await client.query(
-      'SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL',
+      'SELECT id FROM users WHERE email = $1',
       [email]
     );
     
@@ -170,7 +176,7 @@ router.post('/', async (req, res) => {
     
     // Cek NIP duplicate
     const checkNip = await client.query(
-      'SELECT id FROM teachers WHERE nip = $1 AND deleted_at IS NULL',
+      'SELECT id FROM teachers WHERE nip = $1',
       [nip]
     );
     
@@ -225,14 +231,17 @@ router.post('/', async (req, res) => {
 });
 
 // UPDATE teacher
-router.patch('/:id', async (req, res) => {
+router.patch('/:id(\\d+)', async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = parseInt(req.params.id, 10);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ success: false, message: 'Invalid teacher id' });
+    }
     const { nip, name, gender, date_of_birth, phone_number, address, department, photo_profile } = req.body;
-    
+
     // Cek apakah teacher ada
     const checkTeacher = await pool.query(
-      'SELECT id FROM teachers WHERE id = $1 AND deleted_at IS NULL',
+      'SELECT id FROM teachers WHERE id = $1',
       [id]
     );
     
@@ -246,9 +255,9 @@ router.patch('/:id', async (req, res) => {
     // Cek NIP duplicate jika NIP diubah
     if (nip) {
       const checkNip = await pool.query(
-        'SELECT id FROM teachers WHERE nip = $1 AND id != $2 AND deleted_at IS NULL',
+        'SELECT id FROM teachers WHERE nip = $1 AND id != $2',
         [nip, id]
-      );
+        );
       
       if (checkNip.rows.length > 0) {
         return res.status(409).json({
@@ -318,7 +327,7 @@ router.patch('/:id', async (req, res) => {
       paramIndex++;
     }
     
-    query += ` WHERE id = $${paramIndex} AND deleted_at IS NULL
+    query += ` WHERE id = $${paramIndex}
       RETURNING id, user_id, nip, name, gender, date_of_birth, phone_number, address, department, photo_profile, created_at, updated_at`;
     params.push(id);
     
@@ -339,18 +348,21 @@ router.patch('/:id', async (req, res) => {
   }
 });
 
-// DELETE teacher (soft delete)
-router.delete('/:id', async (req, res) => {
+// DELETE teacher — hard delete; deletes the linked user which cascades to teacher via FK
+router.delete('/:id(\\d+)', async (req, res) => {
   const client = await pool.connect();
   
   try {
-    const { id } = req.params;
+    const id = parseInt(req.params.id, 10);
+    if (Number.isNaN(id)) {
+      return res.status(400).json({ success: false, message: 'Invalid teacher id' });
+    }
     
     await client.query('BEGIN');
     
-    // Get user_id first
+    // Get user_id before deleting
     const teacherResult = await client.query(
-      'SELECT user_id FROM teachers WHERE id = $1 AND deleted_at IS NULL',
+      'SELECT user_id FROM teachers WHERE id = $1',
       [id]
     );
     
@@ -364,17 +376,8 @@ router.delete('/:id', async (req, res) => {
     
     const userId = teacherResult.rows[0].user_id;
     
-    // Soft delete teacher
-    await client.query(
-      'UPDATE teachers SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1',
-      [id]
-    );
-    
-    // Soft delete user
-    await client.query(
-      'UPDATE users SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1',
-      [userId]
-    );
+    // Deleting the user cascades to the teachers row via FK ON DELETE CASCADE
+    await client.query('DELETE FROM users WHERE id = $1', [userId]);
     
     await client.query('COMMIT');
     

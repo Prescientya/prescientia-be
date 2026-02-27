@@ -122,7 +122,7 @@ router.post('/scan', async (req, res) => {
 
     // ========== Validate User Exists ==========
     const userCheck = await pool.query(
-      'SELECT id FROM users WHERE id = $1 AND deleted_at IS NULL',
+      'SELECT id FROM users WHERE id = $1',
       [user_id]
     );
 

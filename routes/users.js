@@ -15,7 +15,7 @@ router.get('/', async (req, res) => {
       SELECT id, email, email_verified_at, device_id, wifi_mac, 
              is_active, last_login_at, created_at, updated_at
       FROM users
-      WHERE deleted_at IS NULL
+      WHERE 1=1
     `;
     const params = [];
     
@@ -30,7 +30,7 @@ router.get('/', async (req, res) => {
     const result = await pool.query(query, params);
     
     // Get total count
-    let countQuery = `SELECT COUNT(*) FROM users WHERE deleted_at IS NULL`;
+    let countQuery = `SELECT COUNT(*) FROM users WHERE 1=1`;
     if (is_active !== undefined) {
       countQuery += ` AND is_active = ${is_active === 'true'}`;
     }
@@ -66,7 +66,7 @@ router.get('/:id', async (req, res) => {
       SELECT id, email, email_verified_at, device_id, wifi_mac, 
              is_active, last_login_at, created_at, updated_at
       FROM users
-      WHERE id = $1 AND deleted_at IS NULL
+      WHERE id = $1
     `;
     
     const result = await pool.query(query, [id]);
@@ -110,7 +110,7 @@ router.patch('/:id', async (req, res) => {
     
     // Cek apakah user ada
     const checkUser = await pool.query(
-      'SELECT id FROM users WHERE id = $1 AND deleted_at IS NULL',
+      'SELECT id FROM users WHERE id = $1',
       [id]
     );
     
@@ -124,7 +124,7 @@ router.patch('/:id', async (req, res) => {
     // Cek email duplicate jika email diubah
     if (email) {
       const checkEmail = await pool.query(
-        'SELECT id FROM users WHERE email = $1 AND id != $2 AND deleted_at IS NULL',
+        'SELECT id FROM users WHERE email = $1 AND id != $2',
         [email, id]
       );
       
@@ -171,7 +171,7 @@ router.patch('/:id', async (req, res) => {
       paramIndex++;
     }
     
-    query += ` WHERE id = $${paramIndex} AND deleted_at IS NULL
+    query += ` WHERE id = $${paramIndex}
       RETURNING id, email, device_id, wifi_mac, is_active, created_at, updated_at`;
     params.push(id);
     
@@ -199,11 +199,11 @@ router.delete('/:id', async (req, res) => {
 
     // Cek apakah user terhubung dengan role manapun (students, teachers, admins)
     const roleCheckQuery = `
-      SELECT 'student' as role FROM students WHERE user_id = $1 AND deleted_at IS NULL
+      SELECT 'student' as role FROM students WHERE user_id = $1
       UNION ALL
-      SELECT 'teacher' as role FROM teachers WHERE user_id = $1 AND deleted_at IS NULL
+      SELECT 'teacher' as role FROM teachers WHERE user_id = $1
       UNION ALL
-      SELECT 'admin' as role FROM admins WHERE user_id = $1 AND deleted_at IS NULL
+      SELECT 'admin' as role FROM admins WHERE user_id = $1
       LIMIT 1
     `;
     const roleCheck = await pool.query(roleCheckQuery, [id]);
@@ -216,9 +216,8 @@ router.delete('/:id', async (req, res) => {
     }
 
     const query = `
-      UPDATE users 
-      SET deleted_at = NOW(), updated_at = NOW()
-      WHERE id = $1 AND deleted_at IS NULL
+      DELETE FROM users
+      WHERE id = $1
       RETURNING id
     `;
 

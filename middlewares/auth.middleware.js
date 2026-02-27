@@ -17,6 +17,10 @@ function extractBearerToken(req) {
 // - ensures decoded.user_type === 'student'
 // - attaches decoded payload to req.user
 // - responds with Indonesian error messages on failure
+// NOTE: student tokens are issued WITHOUT expiry (permanent session policy).
+//       TokenExpiredError should therefore never occur for tokens minted after
+//       this policy was applied. Old 7d tokens will fail once on the next API
+//       call, prompting a one-time re-login to receive a permanent token.
 function requireStudent(req, res, next) {
   try {
     const token = extractBearerToken(req);
@@ -29,10 +33,10 @@ function requireStudent(req, res, next) {
 
     jwt.verify(token, secret, (err, decoded) => {
       if (err) {
-        if (err.name === 'TokenExpiredError') {
-          return res.status(401).json({ success: false, message: 'Token kadaluwarsa. Silakan login kembali.' });
-        }
-        return res.status(401).json({ success: false, message: 'Token tidak valid.' });
+        // All JWT errors (signature invalid, malformed, etc.) produce the same
+        // response. TokenExpiredError is no longer a distinct case because
+        // student tokens are issued without expiry.
+        return res.status(401).json({ success: false, message: 'Token tidak valid. Silakan login kembali.' });
       }
 
         // Ensure token contains required shape and mandatory student_id
@@ -107,13 +111,15 @@ function requireTeacher(req, res, next) {
         return res.status(401).json({ success: false, message: 'Token tidak valid atau tidak mengandung teacher_id.' });
       }
 
-      // Attach a minimal, explicit `req.user` shape for downstream authorization
+      // Attach a minimal, explicit `req.user` shape for downstream authorization.
+      // teacher_roles is an array of {role, class_id, class_name} objects.
+      // Use req.user.teacher_roles to check if teacher is wali_kelas of a specific class.
       req.user = {
         user_id: decoded.user_id,
         teacher_id: decoded.teacher_id,
         user_type: decoded.user_type,
         department: decoded.department || null,
-        teacher_roles: decoded.teacher_roles || null,
+        teacher_roles: Array.isArray(decoded.teacher_roles) ? decoded.teacher_roles : [],
         homeroom_classes: decoded.homeroom_classes || null
       };
 
