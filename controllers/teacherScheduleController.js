@@ -16,6 +16,12 @@ function gradeToRoman(grade) {
 /**
  * SQL fragment: formats class name as "X RPL 1" (Roman grade + major).
  * @param {string} classAlias - table alias for the classes table (e.g. 'c')
+ *
+ * MySQL version (commented out — uses CONCAT() and no type casts):
+ * // return `CONCAT(CASE ${classAlias}.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
+ * //          ELSE ${classAlias}.class END, ' ', COALESCE(${classAlias}.major, ''))`;
+ *
+ * PostgreSQL version: || concatenation and ::text cast.
  */
 function classNameSQL(classAlias) {
   return `(CASE ${classAlias}.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
@@ -97,8 +103,31 @@ const submitTeacherPeriod = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Tidak dapat submit absensi pada hari libur kalender' });
     }
 
-    // UPSERT — the unique key has no date column so we overwrite the existing row
-    // each week. submitted_at captures the exact timestamp.
+    // MySQL version (commented out — ON DUPLICATE KEY UPDATE):
+    /*
+    const upsertQuery = `
+      INSERT INTO submit_teacher_periods
+        (teacher_id, class_id, subject_id, period_id, day, photo_url, is_present, submitted_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())
+      ON DUPLICATE KEY UPDATE
+        photo_url    = VALUES(photo_url),
+        is_present   = VALUES(is_present),
+        submitted_at = NOW(),
+        updated_at   = NOW()
+    `;
+    await pool.query(upsertQuery, [
+      teacherId, class_id, subject_id, period_id, todayDay,
+      photo_url.trim(), Boolean(is_present)
+    ]);
+    const result = await pool.query(
+      `SELECT * FROM submit_teacher_periods
+       WHERE teacher_id = ? AND class_id = ? AND subject_id = ? AND period_id = ? AND day = ?
+       LIMIT 1`,
+      [teacherId, class_id, subject_id, period_id, todayDay]
+    );
+    */
+
+    // PostgreSQL version: ON CONFLICT + RETURNING *
     const upsertQuery = `
       INSERT INTO submit_teacher_periods
         (teacher_id, class_id, subject_id, period_id, day, photo_url, is_present, submitted_at, created_at, updated_at)
@@ -111,7 +140,6 @@ const submitTeacherPeriod = async (req, res) => {
         updated_at   = NOW()
       RETURNING *
     `;
-
     const result = await pool.query(upsertQuery, [
       teacherId, class_id, subject_id, period_id, todayDay,
       photo_url.trim(), Boolean(is_present)
@@ -323,6 +351,8 @@ const getScheduleToday = async (req, res) => {
             AND stp.subject_id  = ts.subject_id
             AND stp.period_id   = ts.class_period_id
             AND stp.day         = cp.day
+            -- MySQL: CONVERT_TZ to shift UTC→WIB (+07:00) before extracting the date
+            -- AND DATE(CONVERT_TZ(stp.submitted_at, '+00:00', '+07:00')) = CURDATE()
             AND DATE(stp.submitted_at AT TIME ZONE 'Asia/Jakarta') = CURRENT_DATE
         ) AS is_submitted
       FROM teacher_schedules ts

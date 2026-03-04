@@ -98,29 +98,51 @@ const submitAttendanceReason = async ({ studentId, attendanceId, reason, descrip
 
     // INSERT into student_attendance_details
     console.log(`[submitAttendanceReason] Inserting detail: attendance_id=${attendanceId}, status=${reason}`);
-    let qInsert = `
-      INSERT INTO student_attendance_details (attendance_id, status, description, evidence_url, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, NOW(), NOW())
-      RETURNING *
-    `;
+    // MySQL version (commented out — INSERT then SELECT using insertId):
+    // let rRawInsert = await client.query(
+    //   `INSERT INTO student_attendance_details (attendance_id, status, description, evidence_url, created_at, updated_at)
+    //    VALUES (?, ?, ?, ?, NOW(), NOW())`,
+    //   [attendanceId, reason, description, evidence_url]
+    // );
+    // let rInsert = await client.query(
+    //   `SELECT * FROM student_attendance_details WHERE id = ? LIMIT 1`,
+    //   [rRawInsert.insertId]
+    // );
+    // const inserted = rInsert.rows[0];
+    //
+    // PostgreSQL version: RETURNING *
+    let qInsert = `INSERT INTO student_attendance_details (attendance_id, status, description, evidence_url, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, NOW(), NOW()) RETURNING *`;
     let rInsert = await client.query(qInsert, [attendanceId, reason, description, evidence_url]);
     const inserted = rInsert.rows[0];
     console.log(`[submitAttendanceReason] insertDetails result:`, inserted);
 
     // UPDATE attendance.status
     console.log(`[submitAttendanceReason] Updating attendance status to: ${reason}`);
+    // MySQL version (commented out — UPDATE then SELECT):
+    // await client.query(
+    //   `UPDATE student_attendances SET status = ?, updated_at = NOW() WHERE id = ?`,
+    //   [reason, attendanceId]
+    // );
+    // let rUpdate = await client.query(
+    //   `SELECT * FROM student_attendances WHERE id = ? LIMIT 1`,
+    //   [attendanceId]
+    // );
+    // const updatedAttendance = rUpdate.rows[0];
+    //
+    // PostgreSQL version: RETURNING *
     let qUpdate = `UPDATE student_attendances SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *`;
     let rUpdate = await client.query(qUpdate, [reason, attendanceId]);
     const updatedAttendance = rUpdate.rows[0];
     console.log(`[submitAttendanceReason] updateAttendanceStatus result:`, updatedAttendance);
 
-    // Mark notifications as read (ignore if table missing)
     try {
       let qNotif = `UPDATE notifications SET is_read = TRUE, updated_at = NOW() WHERE attendance_id = $1 AND student_id = $2`;
       await client.query(qNotif, [attendanceId, requesterStudentId]);
       console.log(`[submitAttendanceReason] markNotificationsRead succeeded`);
     } catch (notifErr) {
-      if (notifErr && notifErr.code === '42P01') {
+      // PostgreSQL: '42P01' = undefined_table  |  MySQL: 'ER_NO_SUCH_TABLE'
+      if (notifErr && (notifErr.code === '42P01' || notifErr.code === 'ER_NO_SUCH_TABLE')) {
         console.warn('[submitAttendanceReason] notifications table not found; skipping markNotificationsRead');
       } else {
         console.warn('[submitAttendanceReason] markNotificationsRead error:', notifErr.message);

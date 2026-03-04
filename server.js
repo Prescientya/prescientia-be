@@ -24,6 +24,9 @@ const studentAttendanceSummaryRoutes = require('./routes/studentAttendanceSummar
 const attendanceRoutes = require('./routes/attendance'); // Wi-Fi based attendance validation
 const classManagementRoutes = require('./routes/classManagement'); // Class attendance management
 const deviceChangeRequestsRoutes = require('./routes/deviceChangeRequests'); // Device change requests management
+const eventsRoutes = require('./routes/events'); // Events / acara sekolah
+const attendanceStatusRoutes = require('./routes/attendanceStatus'); // Attendance status changes
+const absenceLettersRoutes = require('./routes/absenceLetters'); // Absence letters (surat izin/sakit)
 const { errorHandler, notFound } = require('./middleware/errorHandler');
 const { testConnection } = require('./config/db-helper');
 const { displayRoutes } = require('./utils/routeAnalyzer2');
@@ -67,7 +70,10 @@ const routes = [
   { path: '/api/student-attendance-summary', handler: studentAttendanceSummaryRoutes },
   { path: '/api/attendance', handler: attendanceRoutes },
   { path: '/api/class-management', handler: classManagementRoutes },
-  { path: '/api/device-change-requests', handler: deviceChangeRequestsRoutes }
+  { path: '/api/device-change-requests', handler: deviceChangeRequestsRoutes },
+  { path: '/api/events', handler: eventsRoutes },
+  { path: '/api/attendance-status', handler: attendanceStatusRoutes },
+  { path: '/api/absence-letters', handler: absenceLettersRoutes }
 ];
 
 // Register all routes dynamically
@@ -108,13 +114,16 @@ const startServer = async () => {
     // Test database connection
     await testConnection();
     
-    // Get database info
+    // Get database info — PostgreSQL version
+    // MySQL version (commented out):
+    // const dbInfo = await query('SELECT DATABASE() AS current_database');
+    // const tablesResult = await query(`SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name`);
     const { query } = require('./config/db-helper');
     const dbInfo = await query('SELECT current_database()');
     const tablesResult = await query(`
       SELECT table_name 
       FROM information_schema.tables 
-      WHERE table_schema = 'public' 
+      WHERE table_schema = 'public'
       ORDER BY table_name
     `);
     

@@ -1,6 +1,25 @@
 const pool = require('../config/database');
 
 const findAlphaWithoutDetailsByStudent = async (studentId) => {
+  // MySQL version (commented out — uses DATE_FORMAT and DAYNAME):
+  /*
+  const q = `
+        SELECT sa.id AS attendance_id,
+          DATE_FORMAT(COALESCE(DATE(sc.date), DATE(sa.created_at)), '%Y-%m-%d') AS date,
+          DAYNAME(COALESCE(DATE(sc.date), DATE(sa.created_at))) AS day_name,
+          sa.status,
+          sad.id AS detail_id,
+          sad.status AS detail_status,
+          sad.approval_status
+    FROM student_attendances sa
+    LEFT JOIN school_calendar sc ON sa.calendar_id = sc.id
+    LEFT JOIN student_attendance_details sad ON sad.attendance_id = sa.id
+    WHERE sa.student_id = ?
+      AND sa.status = 'alpa'
+    ORDER BY date DESC
+  `;
+  */
+  // PostgreSQL version: to_char and ::date casts
   const q = `
         SELECT sa.id AS attendance_id,
           to_char(COALESCE(sc.date::date, sa.created_at::date), 'YYYY-MM-DD') AS date,
@@ -9,7 +28,6 @@ const findAlphaWithoutDetailsByStudent = async (studentId) => {
           sad.id AS detail_id,
           sad.status AS detail_status,
           sad.approval_status
-    -- include any existing detail record (if any) so caller can know if a reason was submitted
     FROM student_attendances sa
     LEFT JOIN school_calendar sc ON sa.calendar_id = sc.id
     LEFT JOIN student_attendance_details sad ON sad.attendance_id = sa.id
@@ -28,6 +46,12 @@ const findAttendanceById = async (attendanceId) => {
 };
 
 const updateAttendanceStatus = async (client, attendanceId, status) => {
+  // MySQL version (commented out — UPDATE then SELECT):
+  // await client.query(`UPDATE student_attendances SET status = ?, updated_at = NOW() WHERE id = ?`, [status, attendanceId]);
+  // const r = await client.query(`SELECT * FROM student_attendances WHERE id = ? LIMIT 1`, [attendanceId]);
+  // return r.rows[0];
+
+  // PostgreSQL version: RETURNING *
   const q = `UPDATE student_attendances SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *`;
   const r = await client.query(q, [status, attendanceId]);
   return r.rows[0];

@@ -16,7 +16,7 @@ async function testDatabase() {
     if (!connected) {
       console.error('❌ Failed to connect to database');
       console.error('Pastikan:');
-      console.error('- PostgreSQL sudah berjalan');
+      console.error('- MySQL sudah berjalan');
       console.error('- File .env sudah diisi dengan benar');
       console.error('- Database sudah dibuat');
       process.exit(1);

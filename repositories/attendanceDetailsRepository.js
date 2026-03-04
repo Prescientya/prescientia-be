@@ -17,13 +17,28 @@ const existsByAttendanceId = async (clientOrAttendanceId, maybeAttendanceId) => 
     attendanceId = maybeAttendanceId;
   }
 
+  // PostgreSQL uses $1 placeholder
   const q = `SELECT 1 FROM student_attendance_details WHERE attendance_id = $1 LIMIT 1`;
   const r = client ? await client.query(q, [attendanceId]) : await pool.query(q, [attendanceId]);
   return r.rows.length > 0;
 };
 
 const insertDetails = async (client, { attendance_id, status, description = null, evidence_url = null }) => {
-  // The table `student_attendance_details` now stores `status` (sakit/izin)
+  // MySQL version (commented out — INSERT then SELECT with LAST_INSERT_ID()):
+  /*
+  const r = await client.query(
+    `INSERT INTO student_attendance_details (attendance_id, status, description, evidence_url, created_at, updated_at)
+     VALUES (?, ?, ?, ?, NOW(), NOW())`,
+    [attendance_id, status, description, evidence_url]
+  );
+  const inserted = await client.query(
+    `SELECT * FROM student_attendance_details WHERE id = ? LIMIT 1`,
+    [r.insertId]
+  );
+  return inserted.rows[0];
+  */
+
+  // PostgreSQL version: RETURNING *
   const q = `
     INSERT INTO student_attendance_details (attendance_id, status, description, evidence_url, created_at, updated_at)
     VALUES ($1, $2, $3, $4, NOW(), NOW())

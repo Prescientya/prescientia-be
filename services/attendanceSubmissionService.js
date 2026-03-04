@@ -103,7 +103,21 @@ const submitAttendanceReason = async ({
     console.log(
       `[submitAttendanceReason] Inserting detail: attendance_id=${attendanceId}, status=${reason}, description=${description}`
     );
-    // DB table uses column `status` for the detail's reason/status. Insert into `status` for compatibility.
+    // MySQL version (commented out — INSERT then SELECT using insertId):
+    /*
+    const rRaw = await client.query(
+      `INSERT INTO student_attendance_details
+       (attendance_id, status, description, evidence_url, approval_status, approved_by, approved_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'pending', NULL, NULL, NOW(), NOW())`,
+      [attendanceId, reason, description, evidence_url]
+    );
+    const rInsertDetail = await client.query(
+      `SELECT * FROM student_attendance_details WHERE id = ? LIMIT 1`,
+      [rRaw.insertId]
+    );
+    const insertedDetail = rInsertDetail.rows[0];
+    */
+    // PostgreSQL version: RETURNING *
     const qInsertDetail = `
       INSERT INTO student_attendance_details 
       (attendance_id, status, description, evidence_url, approval_status, approved_by, approved_at, created_at, updated_at)
@@ -111,10 +125,7 @@ const submitAttendanceReason = async ({
       RETURNING *
     `;
     const rInsertDetail = await client.query(qInsertDetail, [
-      attendanceId,
-      reason,
-      description,
-      evidence_url
+      attendanceId, reason, description, evidence_url
     ]);
     const insertedDetail = rInsertDetail.rows[0];
     console.log(`[submitAttendanceReason] insertDetail result:`, insertedDetail);

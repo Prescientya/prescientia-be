@@ -483,13 +483,15 @@ router.get('/class-summary/date/:date', async (req, res) => {
     const classQuery = `
       SELECT 
         c.id as class_id,
+        -- MySQL: CONCAT(COALESCE(c.major, ''), ' ', COALESCE(c.class, '')) as class_name,
+        -- PostgreSQL: || concatenation with ::text casts
         (COALESCE(c.major::text, '') || ' ' || COALESCE(c.class::text, '')) as class_name,
         c.class as grade,
-        COUNT(DISTINCT s.id)::int as total_students,
-        COALESCE(COUNT(DISTINCT sa.student_id), 0)::int as attended_students_today,
-        COALESCE(mcd_latest.given_plates, 0)::int as total_piring_given,
-        COALESCE(mcd_latest.returned_plates, 0)::int as total_piring_returned,
-        GREATEST((COALESCE(mcd_latest.given_plates, 0) - COALESCE(mcd_latest.returned_plates, 0)), 0)::int as piring_outstanding,
+        COUNT(DISTINCT s.id) as total_students,
+        COALESCE(COUNT(DISTINCT sa.student_id), 0) as attended_students_today,
+        COALESCE(mcd_latest.given_plates, 0) as total_piring_given,
+        COALESCE(mcd_latest.returned_plates, 0) as total_piring_returned,
+        GREATEST((COALESCE(mcd_latest.given_plates, 0) - COALESCE(mcd_latest.returned_plates, 0)), 0) as piring_outstanding,
         mcd_latest.id as daily_record_id,
         mcd_latest.attended_students as daily_attended_students,
         mcd_latest.given_plates as daily_given_plates,
@@ -504,7 +506,7 @@ router.get('/class-summary/date/:date', async (req, res) => {
         WHERE class_id = c.id AND piring_mbg_id = $2
         ORDER BY created_at DESC 
         LIMIT 1
-      ) mcd_latest ON true
+      ) mcd_latest ON TRUE
       GROUP BY c.id, c.major, c.class, mcd_latest.id, mcd_latest.attended_students, mcd_latest.given_plates, mcd_latest.returned_plates, mcd_latest.student_representative, mcd_latest.created_at
       ORDER BY class_name
     `;

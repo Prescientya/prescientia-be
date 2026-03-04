@@ -93,6 +93,187 @@ router.get('/user/guru', async (req, res) => {
   }
 });
 
+// ==================== VALIDATE TOKEN ENDPOINT ====================
+
+/**
+ * GET /api/auth/validate-token
+ * Verifies that the JWT is valid AND that the underlying user/teacher/student
+ * record still exists in the database. Used by mobile apps on startup to
+ * detect accounts that have been deleted while the user was logged in.
+ *
+ * Returns:
+ *   200 { success: true, valid: true }              – account exists
+ *   401 { success: false, message: '...', account_deleted: true }  – account gone
+ *   401 { success: false, message: '...' }          – bad / expired token
+ */
+router.get('/validate-token', async (req, res) => {
+  try {
+    const authHeader = req.headers['authorization'] || req.headers['Authorization'];
+    if (!authHeader || typeof authHeader !== 'string') {
+      return res.status(401).json({ success: false, message: 'Token tidak ditemukan.' });
+    }
+    const parts = authHeader.split(' ');
+    if (parts.length !== 2 || !/^Bearer$/i.test(parts[0])) {
+      return res.status(401).json({ success: false, message: 'Format token tidak valid.' });
+    }
+    const token = parts[1];
+    const secret = process.env.JWT_SECRET || 'change_this_secret';
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, secret);
+    } catch (err) {
+      return res.status(401).json({ success: false, message: 'Token tidak valid atau sudah kedaluwarsa.' });
+    }
+
+    if (!decoded || !decoded.user_type) {
+      return res.status(401).json({ success: false, message: 'Token tidak valid.' });
+    }
+
+    // Check if the user record still exists
+    const userResult = await pool.query('SELECT id, is_active FROM users WHERE id = $1', [decoded.user_id]);
+    if (userResult.rows.length === 0) {
+      return res.status(401).json({
+        success: false,
+        message: 'Akun Anda telah dihapus oleh admin. Silakan hubungi pihak sekolah.',
+        account_deleted: true,
+      });
+    }
+
+    const user = userResult.rows[0];
+    if (!user.is_active) {
+      return res.status(401).json({
+        success: false,
+        message: 'Akun Anda tidak aktif. Silakan hubungi pihak sekolah.',
+        account_deleted: true,
+      });
+    }
+
+    // Check the specific role record still exists AND return fresh role data
+    if (decoded.user_type === 'teacher' && decoded.teacher_id) {
+      const teacherResult = await pool.query('SELECT id, name, department FROM teachers WHERE id = $1', [decoded.teacher_id]);
+      if (teacherResult.rows.length === 0) {
+        return res.status(401).json({
+          success: false,
+          message: 'Data guru Anda telah dihapus oleh admin. Silakan hubungi pihak sekolah.',
+          account_deleted: true,
+        });
+      }
+
+      // Fetch fresh teacher_class_roles so the FE can update cached session
+      let teacherRoles = [];
+      try {
+        const qRoles = `
+          SELECT tcr.role, tcr.class_id,
+                 (CASE c.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
+                        ELSE c.class::text END || ' ' || COALESCE(c.major::text, '')) AS class_name
+          FROM teacher_class_roles tcr
+          LEFT JOIN classes c ON c.id = tcr.class_id
+          WHERE tcr.teacher_id = $1
+          ORDER BY tcr.role, tcr.class_id`;
+        const rRoles = await pool.query(qRoles, [decoded.teacher_id]);
+        teacherRoles = rRoles.rows.map(r => ({
+          role: r.role,
+          class_id: r.class_id || null,
+          class_name: r.class_name ? r.class_name.trim() : null
+        }));
+      } catch (err) {
+        console.warn('validate-token: Could not fetch teacher_class_roles:', err.message);
+      }
+
+      // Fallback: check classes.homeroom_teacher_id if no wali_kelas in teacher_class_roles
+      const hasWaliKelas = teacherRoles.some(r => r.role === 'wali_kelas');
+      if (!hasWaliKelas) {
+        try {
+          const qHomeroom = `
+            SELECT c.id AS class_id,
+                   (CASE c.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
+                          ELSE c.class::text END || ' ' || COALESCE(c.major::text, '')) AS class_name
+            FROM classes c
+            WHERE c.homeroom_teacher_id = $1`;
+          const rHomeroom = await pool.query(qHomeroom, [decoded.teacher_id]);
+          for (const row of rHomeroom.rows) {
+            teacherRoles.push({
+              role: 'wali_kelas',
+              class_id: row.class_id,
+              class_name: row.class_name ? row.class_name.trim() : null
+            });
+            // Auto-heal
+            try {
+              const exists = await pool.query(
+                `SELECT id FROM teacher_class_roles WHERE teacher_id = $1 AND class_id = $2 AND role = 'wali_kelas'`,
+                [decoded.teacher_id, row.class_id]
+              );
+              if (exists.rows.length === 0) {
+                await pool.query(
+                  `INSERT INTO teacher_class_roles (teacher_id, class_id, role, created_at, updated_at) VALUES ($1, $2, 'wali_kelas', NOW(), NOW())`,
+                  [decoded.teacher_id, row.class_id]
+                );
+              }
+            } catch (_) {}
+          }
+        } catch (err) {
+          console.warn('validate-token: Could not fetch homeroom fallback:', err.message);
+        }
+      }
+
+      const homeroomClasses = teacherRoles
+        .filter(r => r.role === 'wali_kelas' && r.class_id != null)
+        .map(r => r.class_id);
+      const homeroomClassesValue = homeroomClasses.length === 0 ? null
+        : homeroomClasses.length === 1 ? homeroomClasses[0]
+        : homeroomClasses;
+
+      return res.status(200).json({
+        success: true,
+        valid: true,
+        // Fresh role data so FE can update cached session without re-login
+        teacher_roles: teacherRoles,
+        homeroom_classes: homeroomClassesValue,
+        department: teacherResult.rows[0].department,
+      });
+
+    } else if (decoded.user_type === 'student' && decoded.student_id) {
+      const studentResult = await pool.query('SELECT id, class_id FROM students WHERE id = $1', [decoded.student_id]);
+      if (studentResult.rows.length === 0) {
+        return res.status(401).json({
+          success: false,
+          message: 'Data siswa Anda telah dihapus oleh admin. Silakan hubungi pihak sekolah.',
+          account_deleted: true,
+        });
+      }
+
+      // Fetch fresh class_role so the FE can update cached session
+      let classRole = 'pelajar';
+      const classId = studentResult.rows[0].class_id;
+      if (classId) {
+        try {
+          const qRole = `SELECT role FROM student_class_roles WHERE student_id = $1 AND class_id = $2 LIMIT 1`;
+          const rRole = await pool.query(qRole, [decoded.student_id, classId]);
+          if (rRole.rows.length > 0 && rRole.rows[0].role) {
+            classRole = rRole.rows[0].role;
+          }
+        } catch (err) {
+          console.warn('validate-token: Could not fetch student class_role:', err.message);
+        }
+      }
+
+      return res.status(200).json({
+        success: true,
+        valid: true,
+        // Fresh role data so FE can update cached session without re-login
+        class_role: classRole,
+        class_id: classId,
+      });
+    }
+
+    return res.status(200).json({ success: true, valid: true });
+  } catch (error) {
+    console.error('validate-token error:', error);
+    return res.status(500).json({ success: false, message: 'Terjadi kesalahan pada server.' });
+  }
+});
+
 // ==================== LOGIN ENDPOINTS ====================
 
 // Login endpoint untuk Siswa (Student)
@@ -316,8 +497,10 @@ router.post('/login/guru', async (req, res) => {
     try {
       const qRoles = `
         SELECT tcr.role, tcr.class_id,
+               -- MySQL: CONCAT(CASE c.class WHEN 10 THEN 'X' ... END, ' ', COALESCE(c.major, '')) AS class_name
+               -- PostgreSQL: || concatenation with ::text casts
                (CASE c.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
-                ELSE c.class::text END || ' ' || COALESCE(c.major::text, '')) AS class_name
+                      ELSE c.class::text END || ' ' || COALESCE(c.major::text, '')) AS class_name
         FROM teacher_class_roles tcr
         LEFT JOIN classes c ON c.id = tcr.class_id
         WHERE tcr.teacher_id = $1
@@ -331,6 +514,52 @@ router.post('/login/guru', async (req, res) => {
     } catch (err) {
       console.warn('Could not fetch teacher_class_roles:', err.message);
       teacherRoles = [];
+    }
+
+    // Fallback: if teacher_class_roles has no wali_kelas entry, check classes.homeroom_teacher_id
+    // This covers cases where the admin panel set homeroom_teacher_id but didn't sync teacher_class_roles.
+    const hasWaliKelasRole = teacherRoles.some(r => r.role === 'wali_kelas');
+    console.log(`[Login Guru] teacher_id=${teacher.teacher_id}, roles from teacher_class_roles:`, JSON.stringify(teacherRoles));
+    console.log(`[Login Guru] hasWaliKelasRole=${hasWaliKelasRole}`);
+    if (!hasWaliKelasRole) {
+      try {
+        const qHomeroom = `
+          SELECT c.id AS class_id,
+                 (CASE c.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
+                        ELSE c.class::text END || ' ' || COALESCE(c.major::text, '')) AS class_name
+          FROM classes c
+          WHERE c.homeroom_teacher_id = $1`;
+        const rHomeroom = await pool.query(qHomeroom, [teacher.teacher_id]);
+        console.log(`[Login Guru] Fallback homeroom query returned ${rHomeroom.rows.length} rows for teacher_id=${teacher.teacher_id}:`, JSON.stringify(rHomeroom.rows));
+        for (const row of rHomeroom.rows) {
+          teacherRoles.push({
+            role: 'wali_kelas',
+            class_id: row.class_id,
+            class_name: row.class_name ? row.class_name.trim() : null
+          });
+        }
+
+        // Auto-heal: insert missing wali_kelas role into teacher_class_roles so future logins are faster
+        for (const row of rHomeroom.rows) {
+          try {
+            const exists = await pool.query(
+              `SELECT id FROM teacher_class_roles WHERE teacher_id = $1 AND class_id = $2 AND role = 'wali_kelas'`,
+              [teacher.teacher_id, row.class_id]
+            );
+            if (exists.rows.length === 0) {
+              await pool.query(
+                `INSERT INTO teacher_class_roles (teacher_id, class_id, role, created_at, updated_at) VALUES ($1, $2, 'wali_kelas', NOW(), NOW())`,
+                [teacher.teacher_id, row.class_id]
+              );
+              console.log(`[Login Guru] Auto-healed: inserted wali_kelas role for teacher_id=${teacher.teacher_id}, class_id=${row.class_id}`);
+            }
+          } catch (healErr) {
+            console.warn(`[Login Guru] Auto-heal failed for class_id=${row.class_id}:`, healErr.message);
+          }
+        }
+      } catch (err) {
+        console.warn('Could not fetch homeroom from classes table:', err.message);
+      }
     }
 
     // Derive homeroom class IDs from wali_kelas roles (single source of truth)

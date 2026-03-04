@@ -59,8 +59,25 @@ router.get('/attendance/today', requireStudent, async (req, res) => {
     const calendar_id = calendarQuery.rows.length > 0 ? calendarQuery.rows[0].id : null;
     
     // Query untuk mendapatkan semua siswa di kelas dengan status kehadiran (jika ada)
-    // Menggunakan DISTINCT ON untuk memastikan 1 row per student
-    // Filter attendance hanya untuk tanggal yang diminta
+    // MySQL version (commented out — uses correlated subquery):
+    /*
+    const query = `
+      SELECT
+        s.id as student_id, s.nis, s.name, s.gender,
+        sa.id as attendance_id, sa.status, sa.check_in_time, sa.check_out_time,
+        sa.source, sa.created_at, sa.updated_at
+      FROM students s
+      LEFT JOIN student_attendances sa ON sa.id = (
+        SELECT id FROM student_attendances
+        WHERE student_id = s.id AND class_id = $1
+          AND DATE(created_at) = DATE($2)
+        ORDER BY created_at DESC LIMIT 1
+      )
+      WHERE s.class_id = $1
+      ORDER BY s.id, s.name
+    `;
+    */
+    // PostgreSQL version: DISTINCT ON + LEFT JOIN LATERAL
     const query = `
       SELECT DISTINCT ON (s.id)
         s.id as student_id,
@@ -73,17 +90,18 @@ router.get('/attendance/today', requireStudent, async (req, res) => {
         sa.check_out_time,
         sa.source,
         sa.created_at,
-        sa.updated_at
+        sa.updated_at,
+        sad.approval_status,
+        sad.status as requested_status
       FROM students s
       LEFT JOIN LATERAL (
         SELECT id, status, check_in_time, check_out_time, source, created_at, updated_at
         FROM student_attendances
-        WHERE student_id = s.id 
-          AND class_id = $1
+        WHERE student_id = s.id AND class_id = $1
           AND DATE(created_at AT TIME ZONE 'UTC') = DATE($2::date)
-        ORDER BY created_at DESC
-        LIMIT 1
+        ORDER BY created_at DESC LIMIT 1
       ) sa ON true
+      LEFT JOIN student_attendance_details sad ON sad.attendance_id = sa.id
       WHERE s.class_id = $1
       ORDER BY s.id, s.name
     `;
@@ -109,7 +127,9 @@ router.get('/attendance/today', requireStudent, async (req, res) => {
         check_out_time: row.check_out_time,
         source: row.source,
         created_at: row.created_at,
-        updated_at: row.updated_at
+        updated_at: row.updated_at,
+        approval_status: row.approval_status || null,
+        requested_status: row.requested_status || null
       };
       
       if (!row.status) {
@@ -162,7 +182,9 @@ router.get('/attendance/today', requireStudent, async (req, res) => {
             check_out_time: row.check_out_time,
             source: row.source,
             created_at: row.created_at,
-            updated_at: row.updated_at
+            updated_at: row.updated_at,
+            approval_status: row.approval_status || null,
+            requested_status: row.requested_status || null
           }))
         }
       }
@@ -266,10 +288,12 @@ router.post('/attendance/batch-submit', requireStudent, async (req, res) => {
         
         // Cek apakah sudah ada attendance untuk student ini di tanggal ini
         const existingCheck = await client.query(
+          // PostgreSQL: DATE(created_at AT TIME ZONE 'UTC') = DATE($3::date)
+          // MySQL: DATE(created_at) = DATE(?) — MySQL stores as-is, no timezone cast
           `SELECT id FROM student_attendances 
            WHERE student_id = $1 
              AND class_id = $2 
-             AND DATE(created_at AT TIME ZONE 'UTC') = DATE($3::date)`,
+             AND DATE(created_at) = DATE($3)`,
           [student_id, class_id, date]
         );
         
@@ -285,6 +309,11 @@ router.post('/attendance/batch-submit', requireStudent, async (req, res) => {
         }
         
         // Insert attendance record
+        // Untuk sakit/izin: simpan sebagai 'alpa' dulu, buat detail pending untuk konfirmasi wali kelas
+        // Untuk alpa: langsung simpan sebagai 'alpa'
+        const savedStatus = (status === 'sakit' || status === 'izin') ? 'alpa' : status;
+        const needsApproval = (status === 'sakit' || status === 'izin');
+        
         const insertQuery = `
           INSERT INTO student_attendances 
           (student_id, class_id, calendar_id, status, source, created_at, updated_at)
@@ -296,16 +325,27 @@ router.post('/attendance/batch-submit', requireStudent, async (req, res) => {
           student_id,
           class_id,
           calendar_id,
-          status,
+          savedStatus,
           'manual' // source dari petugas absensi kelas
         ]);
         
         const attendance_id = insertResult.rows[0].id;
         
-        // Jika ada notes, insert ke student_attendance_details
-        if (notes) {
+        // Buat detail dengan approval_status = 'pending' jika sakit/izin
+        // Ini akan dikirim ke wali kelas untuk dikonfirmasi
+        if (needsApproval) {
           await client.query(
-            'INSERT INTO student_attendance_details (attendance_id, status, description, created_at, updated_at) VALUES ($1, $2, $3, NOW(), NOW())',
+            `INSERT INTO student_attendance_details 
+             (attendance_id, status, description, approval_status, created_at, updated_at) 
+             VALUES ($1, $2, $3, 'pending', NOW(), NOW())`,
+            [attendance_id, status, notes || `Dilaporkan oleh petugas kelas`]
+          );
+        } else if (notes) {
+          // Jika alpa dan ada notes, insert detail tanpa perlu approval
+          await client.query(
+            `INSERT INTO student_attendance_details 
+             (attendance_id, status, description, approval_status, created_at, updated_at) 
+             VALUES ($1, $2, $3, 'approved', NOW(), NOW())`,
             [attendance_id, status, notes]
           );
         }
@@ -313,7 +353,9 @@ router.post('/attendance/batch-submit', requireStudent, async (req, res) => {
         details.push({
           student_id: student_id,
           attendance_id: attendance_id,
-          status: status,
+          status: savedStatus,
+          requested_status: status,
+          needs_approval: needsApproval,
           success: true
         });
         
@@ -331,13 +373,24 @@ router.post('/attendance/batch-submit', requireStudent, async (req, res) => {
     
     await client.query('COMMIT');
     
+    const pendingCount = details.filter(d => d.success && d.needs_approval).length;
+    const directCount = details.filter(d => d.success && !d.needs_approval).length;
+    let message = `${successCount} siswa berhasil diproses`;
+    if (pendingCount > 0) {
+      message += ` (${pendingCount} menunggu konfirmasi wali kelas)`;
+    }
+    if (failedCount > 0) {
+      message += `, ${failedCount} gagal`;
+    }
+    
     res.json({
       success: failedCount === 0,
-      message: `${successCount} siswa berhasil ditambahkan${failedCount > 0 ? `, ${failedCount} gagal` : ''}`,
+      message: message,
       data: {
         total_processed: attendances.length,
         success_count: successCount,
         failed_count: failedCount,
+        pending_approval_count: pendingCount,
         details: details
       }
     });
@@ -437,33 +490,63 @@ router.patch('/attendance/batch-update', requireStudent, async (req, res) => {
         
         const oldStatus = existingQuery.rows[0].status;
         
-        // Update attendance record
-        const updateQuery = `
-          UPDATE student_attendances 
-          SET status = $1, updated_at = NOW()
-          WHERE id = $2
-          RETURNING updated_at
-        `;
+        // Untuk sakit/izin: jangan langsung ubah status, buat detail pending untuk konfirmasi wali kelas
+        // Untuk alpa/hadir: langsung update status
+        const needsApproval = (status === 'sakit' || status === 'izin');
+        const savedStatus = needsApproval ? oldStatus : status; // Keep old status if needs approval
         
-        const updateResult = await client.query(updateQuery, [status, attendance_id]);
+        // Update attendance record (only change status if not needing approval)
+        if (!needsApproval) {
+          const updateQuery = `
+            UPDATE student_attendances 
+            SET status = $1, updated_at = NOW()
+            WHERE id = $2
+            RETURNING updated_at
+          `;
+          await client.query(updateQuery, [savedStatus, attendance_id]);
+        }
         
-        // Update atau insert attendance details jika ada notes
-        if (notes) {
+        // Handle attendance details
+        if (needsApproval) {
+          // Cek apakah sudah ada detail pending untuk attendance ini
+          const detailCheck = await client.query(
+            'SELECT id, approval_status FROM student_attendance_details WHERE attendance_id = $1',
+            [attendance_id]
+          );
+          
+          if (detailCheck.rows.length > 0) {
+            // Update existing detail — reset ke pending
+            await client.query(
+              `UPDATE student_attendance_details 
+               SET status = $1, description = $2, approval_status = 'pending', 
+                   approved_by = NULL, approved_at = NULL, updated_at = NOW() 
+               WHERE attendance_id = $3`,
+              [status, notes || 'Dilaporkan oleh petugas kelas', attendance_id]
+            );
+          } else {
+            // Insert new detail dengan pending
+            await client.query(
+              `INSERT INTO student_attendance_details 
+               (attendance_id, status, description, approval_status, created_at, updated_at) 
+               VALUES ($1, $2, $3, 'pending', NOW(), NOW())`,
+              [attendance_id, status, notes || 'Dilaporkan oleh petugas kelas']
+            );
+          }
+        } else if (notes) {
+          // Untuk alpa/hadir dengan notes
           const detailCheck = await client.query(
             'SELECT id FROM student_attendance_details WHERE attendance_id = $1',
             [attendance_id]
           );
           
           if (detailCheck.rows.length > 0) {
-            // Update existing detail
             await client.query(
-              'UPDATE student_attendance_details SET status = $1, description = $2, updated_at = NOW() WHERE attendance_id = $3',
+              `UPDATE student_attendance_details SET status = $1, description = $2, approval_status = 'approved', updated_at = NOW() WHERE attendance_id = $3`,
               [status, notes, attendance_id]
             );
           } else {
-            // Insert new detail
             await client.query(
-              'INSERT INTO student_attendance_details (attendance_id, status, description, created_at, updated_at) VALUES ($1, $2, $3, NOW(), NOW())',
+              `INSERT INTO student_attendance_details (attendance_id, status, description, approval_status, created_at, updated_at) VALUES ($1, $2, $3, 'approved', NOW(), NOW())`,
               [attendance_id, status, notes]
             );
           }
@@ -473,9 +556,10 @@ router.patch('/attendance/batch-update', requireStudent, async (req, res) => {
           attendance_id: attendance_id,
           student_id: student_id,
           old_status: oldStatus,
-          new_status: status,
+          new_status: needsApproval ? oldStatus : status,
+          requested_status: status,
+          needs_approval: needsApproval,
           success: true,
-          updated_at: updateResult.rows[0].updated_at
         });
         
         successCount++;
@@ -493,13 +577,23 @@ router.patch('/attendance/batch-update', requireStudent, async (req, res) => {
     
     await client.query('COMMIT');
     
+    const pendingCount = details.filter(d => d.success && d.needs_approval).length;
+    let message = `${successCount} siswa berhasil diproses`;
+    if (pendingCount > 0) {
+      message += ` (${pendingCount} menunggu konfirmasi wali kelas)`;
+    }
+    if (failedCount > 0) {
+      message += `, ${failedCount} gagal`;
+    }
+    
     res.json({
       success: failedCount === 0,
-      message: `${successCount} siswa berhasil diupdate${failedCount > 0 ? `, ${failedCount} gagal` : ''}`,
+      message: message,
       data: {
         total_processed: attendances.length,
         success_count: successCount,
         failed_count: failedCount,
+        pending_approval_count: pendingCount,
         details: details
       }
     });

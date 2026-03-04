@@ -7,8 +7,9 @@ const markNotificationsRead = async (client, attendanceId, studentId) => {
   try {
     await client.query(q, [attendanceId, studentId]);
   } catch (err) {
-    // Postgres error code 42P01 = undefined_table
-    if (err && err.code === '42P01') {
+    // PostgreSQL error code for undefined table: '42P01'
+    // MySQL  error code for undefined table: 'ER_NO_SUCH_TABLE'
+    if (err && (err.code === '42P01' || err.code === 'ER_NO_SUCH_TABLE')) {
       console.warn('notifications table not found; skipping markNotificationsRead');
       return;
     }

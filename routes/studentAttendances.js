@@ -16,6 +16,9 @@ router.get('/recap/:student_id', async (req, res) => {
 
     const query = `
       SELECT
+        -- MySQL: DATE_FORMAT(COALESCE(DATE(sc.date), DATE(sa.check_in_time), DATE(sa.created_at)), '%Y-%m-%d') as tanggal,
+        -- MySQL: DAYNAME(COALESCE(DATE(sc.date), DATE(sa.check_in_time), DATE(sa.created_at))) as hari,
+        -- PostgreSQL: to_char with ::date casts
         to_char(COALESCE(sc.date::date, sa.check_in_time::timestamp::date, sa.created_at::timestamp::date), 'YYYY-MM-DD') as tanggal,
         to_char(COALESCE(sc.date::date, sa.check_in_time::timestamp::date, sa.created_at::timestamp::date), 'FMDay') as hari,
         sa.status as status_absensi,
@@ -326,9 +329,10 @@ router.post('/', async (req, res) => {
 });
 
 // APP: student login -> create attendance if not exists (used when student opens the app)
+// Automatically resolves today's school_calendar if calendar_id not provided.
 router.post('/app/login', requireStudent, async (req, res) => {
   try {
-    const { calendar_id, source = 'digital_wifi', check_in_time } = req.body;
+    let { calendar_id, source = 'digital_wifi', check_in_time } = req.body;
 
     // student_id and class_id will be taken from token (req.user)
     const student_id = req.user && req.user.student_id;
@@ -338,8 +342,29 @@ router.post('/app/login', requireStudent, async (req, res) => {
       return res.status(401).json({ success: false, message: 'Token tidak mengandung student_id' });
     }
 
-    if (!class_id || !calendar_id) {
-      return res.status(400).json({ success: false, message: 'class_id (dalam token atau body) dan calendar_id harus diisi' });
+    if (!class_id) {
+      return res.status(400).json({ success: false, message: 'class_id harus diisi (dari token atau body)' });
+    }
+
+    // Auto-resolve calendar_id from today's date if not provided
+    if (!calendar_id) {
+      const calTodayResult = await pool.query(
+        `SELECT id, date, status, notes FROM school_calendar WHERE date = CURRENT_DATE LIMIT 1`
+      );
+      if (calTodayResult.rows.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Hari ini tidak terdaftar di kalender sekolah. Absensi tidak dapat dilakukan.'
+        });
+      }
+      const todayCal = calTodayResult.rows[0];
+      if (todayCal.status === 'libur') {
+        return res.status(400).json({
+          success: false,
+          message: `Hari ini adalah hari libur${todayCal.notes ? ': ' + todayCal.notes : ''}. Absensi tidak dapat dilakukan.`
+        });
+      }
+      calendar_id = todayCal.id;
     }
 
     if (!['digital_wifi', 'guru_pengajar', 'wali_kelas', 'self_report', 'manual'].includes(source)) {

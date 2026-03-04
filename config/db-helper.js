@@ -1,16 +1,19 @@
 const pool = require('../config/database');
 
 /**
- * Test database connection
+ * Test database connection.
+ *
+ * MySQL version (commented out):
+ * // const result = await pool.query('SELECT NOW() AS now');
+ *
+ * PostgreSQL version: uses pool.connect() / client.release() directly.
  */
 const testConnection = async () => {
   try {
     const client = await pool.connect();
-    console.log('✓ Database connected successfully');
-    
     const result = await client.query('SELECT NOW()');
+    console.log('✓ Database connected successfully');
     console.log('✓ Current database time:', result.rows[0].now);
-    
     client.release();
     return true;
   } catch (error) {
@@ -20,7 +23,14 @@ const testConnection = async () => {
 };
 
 /**
- * Execute a query
+ * Execute a query and log duration / row count.
+ *
+ * PostgreSQL version kept as reference:
+ * /*
+ *   const res = await pool.query(text, params);
+ *   console.log('Executed query', { text, duration, rows: res.rowCount });
+ *   return res;
+ * * /
  */
 const query = async (text, params) => {
   const start = Date.now();
@@ -36,31 +46,38 @@ const query = async (text, params) => {
 };
 
 /**
- * Get a client from the pool for transactions
+ * Get a connection from the pool for transactions.
+ *
+ * PostgreSQL version (monkey-patched client — commented out):
+ * /*
+ *   const client = await pool.connect();
+ *   const query   = client.query;
+ *   const release = client.release;
+ *   const timeout = setTimeout(() => {
+ *     console.error('A client has been checked out for more than 5 seconds!');
+ *   }, 5000);
+ *   client.query = (...args) => { client.lastQuery = args; return query.apply(client, args); };
+ *   client.release = () => { clearTimeout(timeout); client.query = query; client.release = release; return release.apply(client); };
+ *   return client;
+ * * /
+ *
+ * MySQL version: pool.connect() already returns a pg-compatible client object
+ * (see config/database.js wrapper). A simple timeout warning is added here.
+ *
+ * PostgreSQL version: pool.connect() with monkey-patched release and timeout warning.
  */
 const getClient = async () => {
   const client = await pool.connect();
-  const query = client.query;
-  const release = client.release;
 
-  // Set a timeout of 5 seconds, after which we will log this client's last query
   const timeout = setTimeout(() => {
     console.error('A client has been checked out for more than 5 seconds!');
   }, 5000);
 
-  // Monkey patch the query method to keep track of the last query executed
-  client.query = (...args) => {
-    client.lastQuery = args;
-    return query.apply(client, args);
-  };
-
+  const originalRelease = client.release;
   client.release = () => {
-    // Clear our timeout
     clearTimeout(timeout);
-    // Set the methods back to their old un-monkey-patched version
-    client.query = query;
-    client.release = release;
-    return release.apply(client);
+    client.release = originalRelease;
+    return originalRelease();
   };
 
   return client;

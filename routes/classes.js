@@ -211,11 +211,41 @@ router.post('/', async (req, res) => {
     `;
     
     const result = await pool.query(query, [classLevel, major, homeroom_teacher_id]);
-    
+    const newClass = result.rows[0];
+
+    // Sync teacher_class_roles when homeroom_teacher_id is set
+    if (homeroom_teacher_id && newClass.id) {
+      try {
+        // Insert wali_kelas role (or update if row already exists for this teacher+class)
+        await pool.query(`
+          INSERT INTO teacher_class_roles (teacher_id, class_id, role, created_at, updated_at)
+          VALUES ($1, $2, 'wali_kelas', NOW(), NOW())
+          ON CONFLICT (teacher_id, class_id) WHERE role = 'wali_kelas'
+          DO UPDATE SET updated_at = NOW()
+        `, [homeroom_teacher_id, newClass.id]);
+      } catch (syncErr) {
+        // Fallback: try without ON CONFLICT (table may lack unique constraint)
+        try {
+          const existing = await pool.query(
+            `SELECT id FROM teacher_class_roles WHERE teacher_id = $1 AND class_id = $2 AND role = 'wali_kelas'`,
+            [homeroom_teacher_id, newClass.id]
+          );
+          if (existing.rows.length === 0) {
+            await pool.query(
+              `INSERT INTO teacher_class_roles (teacher_id, class_id, role, created_at, updated_at) VALUES ($1, $2, 'wali_kelas', NOW(), NOW())`,
+              [homeroom_teacher_id, newClass.id]
+            );
+          }
+        } catch (fallbackErr) {
+          console.warn('Could not sync teacher_class_roles on class create:', fallbackErr.message);
+        }
+      }
+    }
+
     res.status(201).json({
       success: true,
       message: 'Class berhasil dibuat',
-      data: result.rows[0]
+      data: newClass
     });
   } catch (error) {
     console.error('Error creating class:', error);
@@ -288,11 +318,39 @@ router.patch('/:id', async (req, res) => {
     params.push(id);
     
     const result = await pool.query(query, params);
-    
+    const updatedClass = result.rows[0];
+
+    // Sync teacher_class_roles when homeroom_teacher_id is changed
+    if (homeroom_teacher_id !== undefined && updatedClass) {
+      try {
+        // Remove old wali_kelas role(s) for this class
+        await pool.query(
+          `DELETE FROM teacher_class_roles WHERE class_id = $1 AND role = 'wali_kelas'`,
+          [id]
+        );
+
+        // If a new homeroom teacher is assigned, add wali_kelas role
+        if (homeroom_teacher_id) {
+          const existing = await pool.query(
+            `SELECT id FROM teacher_class_roles WHERE teacher_id = $1 AND class_id = $2 AND role = 'wali_kelas'`,
+            [homeroom_teacher_id, id]
+          );
+          if (existing.rows.length === 0) {
+            await pool.query(
+              `INSERT INTO teacher_class_roles (teacher_id, class_id, role, created_at, updated_at) VALUES ($1, $2, 'wali_kelas', NOW(), NOW())`,
+              [homeroom_teacher_id, id]
+            );
+          }
+        }
+      } catch (syncErr) {
+        console.warn('Could not sync teacher_class_roles on class update:', syncErr.message);
+      }
+    }
+
     res.json({
       success: true,
       message: 'Class berhasil diupdate',
-      data: result.rows[0]
+      data: updatedClass
     });
   } catch (error) {
     console.error('Error updating class:', error);

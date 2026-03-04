@@ -16,6 +16,9 @@ router.get('/recap/:teacher_id', async (req, res) => {
 
     const query = `
       SELECT
+        -- MySQL: DATE_FORMAT(COALESCE(DATE(sc.date), DATE(ta.check_in_time), DATE(ta.created_at)), '%Y-%m-%d') as tanggal,
+        -- MySQL: DAYNAME(COALESCE(DATE(sc.date), DATE(ta.check_in_time), DATE(ta.created_at))) as hari,
+        -- PostgreSQL: to_char with ::date casts
         to_char(COALESCE(sc.date::date, ta.check_in_time::timestamp::date, ta.created_at::timestamp::date), 'YYYY-MM-DD') as tanggal,
         to_char(COALESCE(sc.date::date, ta.check_in_time::timestamp::date, ta.created_at::timestamp::date), 'FMDay') as hari,
         ta.status as status_absensi,

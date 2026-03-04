@@ -4,6 +4,7 @@ const pool = require('../config/database');
 const bcrypt = require('bcrypt');
 const { requireTeacher } = require('../middlewares/auth.middleware');
 const teacherScheduleController = require('../controllers/teacherScheduleController');
+const teacherClassController = require('../controllers/teacherClassController');
 
 // ==================== TEACHER SCHEDULE ENDPOINTS ====================
 
@@ -15,6 +16,34 @@ router.get('/schedule/classes', requireTeacher, teacherScheduleController.getSch
 
 // GET classes the authenticated teacher must teach today (from teacher_schedules)
 router.get('/schedule/today', requireTeacher, teacherScheduleController.getScheduleToday);
+
+// ==================== TEACHER CLASS MANAGEMENT ENDPOINTS ====================
+
+// GET all classes taught by authenticated teacher with today's attendance summary
+router.get('/my-classes', requireTeacher, teacherClassController.getTeacherClasses);
+
+// GET students in a specific class with their attendance status
+router.get('/class/:classId/students', requireTeacher, teacherClassController.getClassStudents);
+
+// ==================== HOMEROOM (WALI KELAS) ENDPOINTS ====================
+
+// GET classes where the teacher is homeroom teacher
+router.get('/homeroom-classes', requireTeacher, teacherClassController.getHomeroomClasses);
+
+// GET students in the homeroom class with attendance status
+router.get('/homeroom/students', requireTeacher, teacherClassController.getHomeroomStudents);
+
+// PATCH update (or create) student attendance in homeroom class
+router.patch('/homeroom/attendance', requireTeacher, teacherClassController.updateHomeroomAttendance);
+
+// GET pending attendance approvals for a homeroom class
+router.get('/homeroom/pending', requireTeacher, teacherClassController.getPendingAttendances);
+
+// POST approve a pending attendance detail
+router.post('/homeroom/attendance/:detailId/approve', requireTeacher, teacherClassController.approveAttendance);
+
+// POST reject a pending attendance detail
+router.post('/homeroom/attendance/:detailId/reject', requireTeacher, teacherClassController.rejectAttendance);
 
 // ==================== TEACHERS CRUD ====================
 
