@@ -252,13 +252,17 @@ router.get('/teacher/my', requireTeacher, async (req, res) => {
 router.get('/pending/class/:class_id', requireTeacher, async (req, res) => {
   try {
     const classId = parseInt(req.params.class_id);
-    const { teacher_id, teacher_roles } = req.user;
+    const { teacher_id } = req.user;
 
-    // Check if this teacher is wali kelas of this class
-    const isWaliKelas = Array.isArray(teacher_roles) &&
-      teacher_roles.some(r => r.role === 'wali_kelas' && r.class_id === classId);
+    // Check wali kelas from DB (JWT teacher_roles may be stale)
+    const waliCheck = await pool.query(
+      `SELECT 1 FROM teacher_class_roles WHERE teacher_id = $1 AND class_id = $2 AND role = 'wali_kelas'
+       UNION
+       SELECT 1 FROM classes WHERE homeroom_teacher_id = $1 AND id = $2`,
+      [teacher_id, classId]
+    );
 
-    if (!isWaliKelas) {
+    if (waliCheck.rows.length === 0) {
       return res.status(403).json({
         success: false,
         message: 'Anda bukan wali kelas dari kelas ini.',
@@ -290,7 +294,7 @@ router.get('/pending/class/:class_id', requireTeacher, async (req, res) => {
 router.patch('/approve/wali/:id', requireTeacher, async (req, res) => {
   try {
     const letterId = parseInt(req.params.id);
-    const { teacher_id, teacher_roles } = req.user;
+    const { teacher_id } = req.user;
 
     // Get the letter
     const letter = await pool.query(
@@ -312,25 +316,65 @@ router.patch('/approve/wali/:id', requireTeacher, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Surat sudah diproses sebelumnya.' });
     }
 
-    // Check if teacher is wali kelas for this student's class
-    const isWaliKelas = Array.isArray(teacher_roles) &&
-      teacher_roles.some(r => r.role === 'wali_kelas' && r.class_id === letterData.class_id);
+    // Check wali kelas from DB (JWT teacher_roles may be stale)
+    const waliCheck = await pool.query(
+      `SELECT 1 FROM teacher_class_roles WHERE teacher_id = $1 AND class_id = $2 AND role = 'wali_kelas'
+       UNION
+       SELECT 1 FROM classes WHERE homeroom_teacher_id = $1 AND id = $2`,
+      [teacher_id, letterData.class_id]
+    );
 
-    if (!isWaliKelas) {
+    if (waliCheck.rows.length === 0) {
       return res.status(403).json({ success: false, message: 'Anda bukan wali kelas siswa ini.' });
     }
 
     const result = await pool.query(
       `UPDATE absence_letters
-       SET status = 'approved_wali', approved_by_wali = $1, approved_wali_at = NOW(), updated_at = NOW()
+       SET status = 'approved', approved_by_wali = $1, approved_wali_at = NOW(), updated_at = NOW()
        WHERE id = $2
        RETURNING *`,
       [teacher_id, letterId]
     );
 
+    // Auto-create/update attendance record
+    const approved = result.rows[0];
+    try {
+      if (approved.student_id) {
+        const existingAtt = await pool.query(
+          `SELECT id FROM student_attendances WHERE student_id = $1 AND calendar_id = $2`,
+          [approved.student_id, approved.calendar_id]
+        );
+        if (existingAtt.rows.length > 0) {
+          await pool.query(
+            `UPDATE student_attendances SET status = $1, updated_at = NOW() WHERE id = $2`,
+            [approved.reason, existingAtt.rows[0].id]
+          );
+        } else if (approved.calendar_id) {
+          await pool.query(
+            `INSERT INTO student_attendances (student_id, class_id, calendar_id, status, source, created_at)
+             VALUES ($1, $2, $3, $4, 'wali_kelas', NOW())`,
+            [approved.student_id, approved.class_id, approved.calendar_id, approved.reason]
+          );
+        }
+
+        // Update student_attendance_summary counters
+        const summaryCol = approved.reason === 'sakit' ? 'total_sakit' : 'total_izin';
+        await pool.query(
+          `INSERT INTO student_attendance_summary (student_id, ${summaryCol}, created_at, updated_at)
+           VALUES ($1, 1, NOW(), NOW())
+           ON CONFLICT (student_id) DO UPDATE
+           SET ${summaryCol} = student_attendance_summary.${summaryCol} + 1,
+               updated_at = NOW()`,
+          [approved.student_id]
+        );
+      }
+    } catch (attErr) {
+      console.error('[AbsenceLetters] Error updating attendance record:', attErr.message);
+    }
+
     res.json({
       success: true,
-      message: 'Surat izin disetujui. Menunggu konfirmasi admin.',
+      message: 'Surat izin disetujui dan status kehadiran telah diperbarui.',
       data: result.rows[0],
     });
   } catch (e) {
@@ -398,10 +442,7 @@ router.get('/pending/all', async (req, res) => {
       LEFT JOIN students s ON al.student_id = s.id
       LEFT JOIN teachers t ON al.teacher_id = t.id
       LEFT JOIN classes c ON al.class_id = c.id
-      WHERE (
-        (al.user_type = 'student' AND al.status = 'approved_wali')
-        OR (al.user_type = 'teacher' AND al.status = 'pending')
-      )
+      WHERE al.status = 'pending'
     `;
     const params = [];
 
@@ -443,14 +484,8 @@ router.patch('/approve/admin/:id', async (req, res) => {
 
     const letterData = letter.rows[0];
 
-    // For students: must be approved_wali first. For teachers: can be pending.
-    if (letterData.user_type === 'student' && letterData.status !== 'approved_wali') {
-      return res.status(400).json({
-        success: false,
-        message: 'Surat siswa harus disetujui wali kelas terlebih dahulu.',
-      });
-    }
-    if (letterData.user_type === 'teacher' && letterData.status !== 'pending') {
+    // Both student and teacher letters can be approved from 'pending' status
+    if (letterData.status !== 'pending') {
       return res.status(400).json({
         success: false,
         message: 'Surat sudah diproses sebelumnya.',
@@ -486,10 +521,21 @@ router.patch('/approve/admin/:id', async (req, res) => {
           // Create new attendance record
           await pool.query(
             `INSERT INTO student_attendances (student_id, class_id, calendar_id, status, source, created_at)
-             VALUES ($1, $2, $3, $4, 'surat_izin', NOW())`,
+             VALUES ($1, $2, $3, $4, 'manual', NOW())`,
             [approved.student_id, approved.class_id, approved.calendar_id, approved.reason]
           );
         }
+
+        // Update student_attendance_summary counters
+        const summaryCol = approved.reason === 'sakit' ? 'total_sakit' : 'total_izin';
+        await pool.query(
+          `INSERT INTO student_attendance_summary (student_id, ${summaryCol}, created_at, updated_at)
+           VALUES ($1, 1, NOW(), NOW())
+           ON CONFLICT (student_id) DO UPDATE
+           SET ${summaryCol} = student_attendance_summary.${summaryCol} + 1,
+               updated_at = NOW()`,
+          [approved.student_id]
+        );
       } else if (approved.user_type === 'teacher' && approved.teacher_id) {
         const existingAtt = await pool.query(
           `SELECT id FROM teacher_attendances WHERE teacher_id = $1 AND calendar_id = $2`,
@@ -504,7 +550,7 @@ router.patch('/approve/admin/:id', async (req, res) => {
         } else if (approved.calendar_id) {
           await pool.query(
             `INSERT INTO teacher_attendances (teacher_id, calendar_id, status, source, created_at)
-             VALUES ($1, $2, $3, 'surat_izin', NOW())`,
+             VALUES ($1, $2, $3, 'manual', NOW())`,
             [approved.teacher_id, approved.calendar_id, approved.reason]
           );
         }

@@ -452,11 +452,22 @@ router.patch('/app/logout', requireStudent, async (req, res) => {
     let attendanceId = id;
 
     if (!attendanceId) {
-      if (!calendar_id) {
-        return res.status(400).json({ success: false, message: 'Berikan `id` atau `calendar_id` untuk logout' });
+      let resolvedCalendarId = calendar_id;
+
+      // Auto-resolve calendar_id from today's date if not provided
+      if (!resolvedCalendarId) {
+        const calResult = await pool.query(
+          'SELECT id FROM school_calendar WHERE date = CURRENT_DATE LIMIT 1'
+        );
+        if (calResult.rows.length > 0) {
+          resolvedCalendarId = calResult.rows[0].id;
+        } else {
+          return res.status(400).json({ success: false, message: 'Tidak ada kalender untuk hari ini' });
+        }
       }
+
       const findQ = 'SELECT id FROM student_attendances WHERE student_id = $1 AND calendar_id = $2 LIMIT 1';
-      const findR = await pool.query(findQ, [student_id, calendar_id]);
+      const findR = await pool.query(findQ, [student_id, resolvedCalendarId]);
       if (findR.rows.length === 0) {
         return res.status(404).json({ success: false, message: 'Attendance tidak ditemukan untuk student dan calendar tersebut' });
       }

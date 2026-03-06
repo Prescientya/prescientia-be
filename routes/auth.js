@@ -245,6 +245,7 @@ router.get('/validate-token', async (req, res) => {
 
       // Fetch fresh class_role so the FE can update cached session
       let classRole = 'pelajar';
+      let className = null;
       const classId = studentResult.rows[0].class_id;
       if (classId) {
         try {
@@ -256,6 +257,15 @@ router.get('/validate-token', async (req, res) => {
         } catch (err) {
           console.warn('validate-token: Could not fetch student class_role:', err.message);
         }
+        try {
+          const qClass = `SELECT (CASE class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII' ELSE class::text END || ' ' || COALESCE(major::text, '')) as class_name FROM classes WHERE id = $1`;
+          const rClass = await pool.query(qClass, [classId]);
+          if (rClass.rows.length > 0) {
+            className = rClass.rows[0].class_name ? rClass.rows[0].class_name.trim() : null;
+          }
+        } catch (err) {
+          console.warn('validate-token: Could not fetch class_name:', err.message);
+        }
       }
 
       return res.status(200).json({
@@ -264,6 +274,7 @@ router.get('/validate-token', async (req, res) => {
         // Fresh role data so FE can update cached session without re-login
         class_role: classRole,
         class_id: classId,
+        class_name: className,
       });
     }
 
@@ -298,10 +309,13 @@ router.post('/login/siswa', async (req, res) => {
         s.id as student_id, s.nis, s.name, s.gender, s.date_of_birth,
         s.phone_number, s.address, s.class_id, s.photo_profile,
         u.id as user_id, u.email, u.password, u.is_active, u.device_id,
-        scr.role as class_role
+        scr.role as class_role,
+        (CASE c.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
+         ELSE c.class::text END || ' ' || COALESCE(c.major::text, '')) as class_name
       FROM students s
       INNER JOIN users u ON s.user_id = u.id
       LEFT JOIN student_class_roles scr ON s.id = scr.student_id AND s.class_id = scr.class_id
+      LEFT JOIN classes c ON s.class_id = c.id
       WHERE s.nis COLLATE "C" = $1 COLLATE "C"
     `;
 
@@ -390,6 +404,7 @@ router.post('/login/siswa', async (req, res) => {
         phone_number: student.phone_number,
         address: student.address,
         class_id: student.class_id,
+        class_name: student.class_name ? student.class_name.trim() : null,
         photo_profile: student.photo_profile,
         role: 'siswa',
         class_role: student.class_role || 'pelajar',

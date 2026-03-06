@@ -249,4 +249,60 @@ router.get('/check/:user_id', async (req, res) => {
   }
 });
 
+// ==================== LAST PERIOD END TIME ====================
+
+/**
+ * GET /api/attendance/last-period-today
+ * Returns the end_time of the last lesson period for today's day of week.
+ * Used by Flutter apps to schedule checkout notifications.
+ */
+router.get('/last-period-today', async (req, res) => {
+  try {
+    const days = ['minggu', 'senin', 'selasa', 'rabu', 'kamis', 'jumat', 'sabtu'];
+    const now = new Date();
+    const day = days[now.getDay()];
+
+    if (day === 'minggu' || day === 'sabtu') {
+      return res.json({
+        success: true,
+        data: null,
+        message: 'Tidak ada jam pelajaran pada hari ini'
+      });
+    }
+
+    const result = await pool.query(
+      `SELECT end_time
+       FROM class_periods
+       WHERE day = $1
+         AND activity_type = 'lesson'
+       ORDER BY sequence DESC
+       LIMIT 1`,
+      [day]
+    );
+
+    if (result.rows.length === 0) {
+      return res.json({
+        success: true,
+        data: null,
+        message: 'Tidak ada jam pelajaran yang ditemukan untuk hari ini'
+      });
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        day: day,
+        end_time: result.rows[0].end_time
+      }
+    });
+  } catch (error) {
+    console.error('[Attendance] Error getting last period:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Terjadi kesalahan',
+      error: error.message
+    });
+  }
+});
+
 module.exports = router;

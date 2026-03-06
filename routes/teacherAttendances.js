@@ -364,6 +364,20 @@ router.post('/app/login', requireTeacher, async (req, res) => {
     const calendar_id = calendar.id;
     const inTime = check_in_time || new Date().toISOString();
 
+    // Determine status based on check-in time: after 06:30 -> 'terlambat'
+    let status = 'hadir';
+    try {
+      const dt = new Date(inTime);
+      const hr = dt.getHours();
+      const min = dt.getMinutes();
+      const isAfter0630 = (hr > 6) || (hr === 6 && min > 30);
+      if (isAfter0630) {
+        status = 'terlambat';
+      }
+    } catch (e) {
+      // if invalid date, keep default 'hadir'
+    }
+
     // Check if attendance for today already exists
     const existResult = await pool.query(
       'SELECT * FROM teacher_attendances WHERE teacher_id = $1 AND calendar_id = $2 LIMIT 1',
@@ -380,10 +394,10 @@ router.post('/app/login', requireTeacher, async (req, res) => {
           data: existing
         });
       }
-      // Fill in check_in_time if it was missing
+      // Fill in check_in_time if it was missing — also set proper status
       const updated = await pool.query(
-        'UPDATE teacher_attendances SET check_in_time = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
-        [inTime, existing.id]
+        'UPDATE teacher_attendances SET check_in_time = $1, status = $2, updated_at = NOW() WHERE id = $3 RETURNING *',
+        [inTime, status, existing.id]
       );
       return res.json({
         success: true,
@@ -395,9 +409,9 @@ router.post('/app/login', requireTeacher, async (req, res) => {
     // Insert new attendance record
     const insertResult = await pool.query(
       `INSERT INTO teacher_attendances (teacher_id, calendar_id, check_in_time, status, source, created_at, updated_at)
-       VALUES ($1, $2, $3, 'hadir', $4, NOW(), NOW())
+       VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
        RETURNING *`,
-      [teacher_id, calendar_id, inTime, source]
+      [teacher_id, calendar_id, inTime, status, source]
     );
 
     return res.status(201).json({

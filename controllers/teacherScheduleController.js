@@ -59,16 +59,17 @@ const submitTeacherPeriod = async (req, res) => {
 
     const { class_id, subject_id, period_id, photo_url, is_present = true } = req.body;
 
-    if (!class_id || !subject_id || !period_id || !photo_url) {
+    if (!class_id || !subject_id || !period_id) {
       return res.status(400).json({
         success: false,
-        message: 'class_id, subject_id, period_id, dan photo_url harus diisi'
+        message: 'class_id, subject_id, dan period_id harus diisi'
       });
     }
 
-    if (typeof photo_url !== 'string' || photo_url.trim() === '') {
-      return res.status(400).json({ success: false, message: 'photo_url harus berupa string URL yang valid' });
-    }
+    // photo_url is now optional (simplified submit without photo)
+    const photoValue = (photo_url && typeof photo_url === 'string' && photo_url.trim() !== '')
+      ? photo_url.trim()
+      : null;
 
     // Derive today's day name in Indonesian
     const daysIndonesian = ['minggu', 'senin', 'selasa', 'rabu', 'kamis', 'jumat', 'sabtu'];
@@ -93,6 +94,26 @@ const submitTeacherPeriod = async (req, res) => {
         success: false,
         message: 'Anda tidak memiliki jadwal mengajar untuk periode ini hari ini'
       });
+    }
+
+    // Validate time window: teacher can only submit during the period time
+    const periodTimeCheck = await pool.query(
+      `SELECT cp.start_time, cp.end_time
+       FROM class_periods cp
+       WHERE cp.id = $1 AND cp.day = $2
+       LIMIT 1`,
+      [period_id, todayDay]
+    );
+
+    if (periodTimeCheck.rows.length > 0) {
+      const currentTime = new Date().toTimeString().slice(0, 8); // HH:MM:SS
+      const { start_time, end_time } = periodTimeCheck.rows[0];
+      if (currentTime < start_time || currentTime > end_time) {
+        return res.status(400).json({
+          success: false,
+          message: `Anda hanya dapat submit kehadiran saat jam pelajaran berlangsung (${start_time} - ${end_time})`
+        });
+      }
     }
 
     // Check today's school calendar is active
@@ -142,7 +163,7 @@ const submitTeacherPeriod = async (req, res) => {
     `;
     const result = await pool.query(upsertQuery, [
       teacherId, class_id, subject_id, period_id, todayDay,
-      photo_url.trim(), Boolean(is_present)
+      photoValue, Boolean(is_present)
     ]);
 
     res.status(200).json({
