@@ -1,6 +1,7 @@
 // ============================================================
-// PostgreSQL (pg) — active configuration
+// PostgreSQL (pg) — commented out; switch back when needed
 // ============================================================
+/*
 const { Pool } = require('pg');
 require('dotenv').config();
 
@@ -13,11 +14,11 @@ const pool = new Pool({
 });
 
 module.exports = pool;
+*/
 
 // ============================================================
-// MySQL (mysql2) — commented out; switch back when needed
+// MySQL (mysql2) — active configuration
 // ============================================================
-/*
 const mysql = require('mysql2/promise');
 require('dotenv').config();
 
@@ -134,4 +135,3 @@ const pool = {
 };
 
 module.exports = pool;
-*/

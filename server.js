@@ -114,18 +114,10 @@ const startServer = async () => {
     // Test database connection
     await testConnection();
     
-    // Get database info — PostgreSQL version
-    // MySQL version (commented out):
-    // const dbInfo = await query('SELECT DATABASE() AS current_database');
-    // const tablesResult = await query(`SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name`);
+    // Get database info — MySQL version
     const { query } = require('./config/db-helper');
-    const dbInfo = await query('SELECT current_database()');
-    const tablesResult = await query(`
-      SELECT table_name 
-      FROM information_schema.tables 
-      WHERE table_schema = 'public'
-      ORDER BY table_name
-    `);
+    const dbInfo = await query('SELECT DATABASE() AS current_database');
+    const tablesResult = await query(`SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name`);
     
     app.listen(PORT, () => {
       console.log('=================================');
