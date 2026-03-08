@@ -56,6 +56,22 @@ function inlineLimitOffset(sql, params) {
   return { sql, params: p };
 }
 
+// Reorder params to match the positional order of $N occurrences in the SQL string.
+// PostgreSQL uses named positional params ($1, $2, ...) which can appear in any order,
+// but MySQL uses positional '?' which must match params index-by-index.
+// Example: "UPDATE t SET col = $2 WHERE id = $1" with params [id, col]
+//   $2 appears first → MySQL first '?' should get params[1] (col)
+//   $1 appears second → MySQL second '?' should get params[0] (id)
+function reorderParams(text, params) {
+  if (!params || params.length === 0) return params;
+  const order = [];
+  text.replace(/\$(\d+)/g, (_, n) => {
+    order.push(parseInt(n, 10) - 1);
+  });
+  if (order.length === 0) return params;
+  return order.map(i => params[i]);
+}
+
 function normaliseRows(rows) {
   if (!Array.isArray(rows) || rows.length === 0) return rows;
   const sample = rows[0];
@@ -83,12 +99,16 @@ function wrapResult(rows) {
 async function runQuery(queryFn, text, params) {
   const retIdx = text.search(/\bRETURNING\b/i);
   if (retIdx === -1) {
-    const converted = inlineLimitOffset(pgToMySQL(text), params);
+    // Reorder params to match the order of $N occurrences in the SQL string before
+    // converting to MySQL positional '?' — fixes out-of-order $N like "SET col=$2 WHERE id=$1"
+    const reorderedParams = reorderParams(text, params);
+    const converted = inlineLimitOffset(pgToMySQL(text), reorderedParams);
     const [rows] = await queryFn(converted.sql, converted.params);
     return wrapResult(rows);
   }
   const cleanText = text.substring(0, retIdx).trim();
-  const converted = inlineLimitOffset(pgToMySQL(cleanText), params);
+  const reorderedReturningParams = reorderParams(cleanText, params);
+  const converted = inlineLimitOffset(pgToMySQL(cleanText), reorderedReturningParams);
   const mysqlSql  = converted.sql;
   const cleanParams = converted.params;
   const [rows] = await queryFn(mysqlSql, cleanParams);
