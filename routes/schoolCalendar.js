@@ -1,15 +1,15 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
+const { requireAuth, requireAdmin } = require('../middlewares/auth.middleware');
 
-// ==================== SCHOOL CALENDAR CRUD ====================
-
-// GET all school calendar entries
+// GET school calendar entries with optional filter
+// GET /api/school-calendar?year=2026&month=3&page=1
 router.get('/', async (req, res) => {
   try {
-    const { page = 1, limit = 10, year, month, status } = req.query;
+    const { page = 1, limit = 31, year, month } = req.query;
     const offset = (page - 1) * limit;
-    
+
     let query = `
       SELECT id, date, year, month, day, status, created_at, updated_at
       FROM school_calendar
@@ -17,300 +17,160 @@ router.get('/', async (req, res) => {
     `;
     const params = [];
     let paramIndex = 1;
-    
+
     if (year) {
       query += ` AND year = $${paramIndex}`;
       params.push(year);
       paramIndex++;
     }
-    
+
     if (month) {
       query += ` AND month = $${paramIndex}`;
       params.push(month);
       paramIndex++;
     }
-    
-    if (status) {
-      query += ` AND status = $${paramIndex}`;
-      params.push(status);
-      paramIndex++;
-    }
-    
-    query += ` ORDER BY date ASC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
-    params.push(limit, offset);
-    
-    const result = await pool.query(query, params);
-    
-    // Count query
+
+    // Count total before pagination
     let countQuery = 'SELECT COUNT(*) FROM school_calendar WHERE 1=1';
     const countParams = [];
     let countParamIndex = 1;
-    
+
     if (year) {
       countQuery += ` AND year = $${countParamIndex}`;
       countParams.push(year);
       countParamIndex++;
     }
-    
+
     if (month) {
       countQuery += ` AND month = $${countParamIndex}`;
       countParams.push(month);
-      countParamIndex++;
     }
-    
-    if (status) {
-      countQuery += ` AND status = $${countParamIndex}`;
-      countParams.push(status);
-    }
-    
+
     const countResult = await pool.query(countQuery, countParams);
-    
+    const total = parseInt(countResult.rows[0].count);
+    const totalPages = Math.ceil(total / limit);
+
+    query += ` ORDER BY date ASC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+    params.push(limit, offset);
+
+    const result = await pool.query(query, params);
+
     res.json({
       success: true,
       message: 'Data school calendar berhasil diambil',
       data: result.rows,
       pagination: {
-        total: parseInt(countResult.rows[0].count),
+        total,
         page: parseInt(page),
         limit: parseInt(limit),
-        totalPages: Math.ceil(countResult.rows[0].count / limit)
+        totalPages
       }
     });
   } catch (error) {
     console.error('Error fetching school calendar:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Terjadi kesalahan saat mengambil data school calendar',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengambil data school calendar', error: error.message });
   }
 });
 
-// GET school calendar by ID
-router.get('/:id', async (req, res) => {
+// GET school calendar by date (used by prescientia_fe and prescientia_guru_fe)
+// GET /api/school-calendar/by-date/2026-03-07
+router.get('/by-date/:dateStr', async (req, res) => {
   try {
-    const { id } = req.params;
-    
-    const query = `
-      SELECT id, date, year, month, day, status, created_at, updated_at
-      FROM school_calendar
-      WHERE id = $1
-    `;
-    
-    const result = await pool.query(query, [id]);
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'School calendar tidak ditemukan'
-      });
-    }
-    
-    res.json({
-      success: true,
-      message: 'Data school calendar berhasil diambil',
-      data: result.rows[0]
-    });
-  } catch (error) {
-    console.error('Error fetching school calendar:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Terjadi kesalahan saat mengambil data school calendar',
-      error: error.message
-    });
-  }
-});
+    const { dateStr } = req.params;
 
-// GET school calendar by DATE (format: YYYY-MM-DD)
-router.get('/by-date/:date', async (req, res) => {
-  try {
-    const { date } = req.params;
-
-    if (!date) {
-      return res.status(400).json({
-        success: false,
-        message: 'Tanggal harus diisi (format: YYYY-MM-DD)'
-      });
-    }
-
-    // Validate date format (basic check)
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Format tanggal tidak valid (gunakan YYYY-MM-DD)'
-      });
-    }
-
-    const query = `
-      SELECT id, date, year, month, day, status, created_at, updated_at
-      FROM school_calendar
-      WHERE DATE(date) = $1
-    `;
-
-    const result = await pool.query(query, [date]);
+    const result = await pool.query(
+      'SELECT id, date, year, month, day, status, created_at, updated_at FROM school_calendar WHERE date = $1',
+      [dateStr]
+    );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: `School calendar tidak ditemukan untuk tanggal ${date}`
-      });
+      return res.status(404).json({ success: false, message: 'Data kalender tidak ditemukan untuk tanggal tersebut' });
     }
 
     res.json({
       success: true,
-      message: 'Data school calendar berdasarkan tanggal berhasil diambil',
       data: result.rows[0]
     });
   } catch (error) {
     console.error('Error fetching school calendar by date:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Terjadi kesalahan saat mengambil data school calendar berdasarkan tanggal',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan', error: error.message });
   }
 });
 
-// CREATE school calendar entry
-router.post('/', async (req, res) => {
+// POST create school calendar entry
+router.post('/', requireAdmin, async (req, res) => {
   try {
-    const { date, status = 'aktif' } = req.body;
-    
-    // Validasi input
-    if (!date) {
-      return res.status(400).json({
-        success: false,
-        message: 'Date harus diisi'
-      });
+    const { date, status } = req.body;
+
+    if (!date || !status) {
+      return res.status(400).json({ success: false, message: 'date dan status harus diisi' });
     }
-    
-    // Validasi status
-    if (!['aktif', 'libur'].includes(status)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Status harus aktif atau libur'
-      });
-    }
-    
-    // Cek duplicate date
-    const checkDate = await pool.query(
-      'SELECT id FROM school_calendar WHERE date = $1',
-      [date]
-    );
-    
-    if (checkDate.rows.length > 0) {
-      return res.status(409).json({
-        success: false,
-        message: 'Tanggal sudah terdaftar'
-      });
-    }
-    
-    // Parse date untuk dapatkan year, month, day
+
     const dateObj = new Date(date);
     const year = dateObj.getFullYear();
     const month = dateObj.getMonth() + 1;
     const day = dateObj.getDate();
-    
-    const query = `
-      INSERT INTO school_calendar (date, year, month, day, status, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
-      RETURNING *
-    `;
-    
-    const result = await pool.query(query, [date, year, month, day, status]);
-    
-    res.status(201).json({
-      success: true,
-      message: 'School calendar berhasil dibuat',
-      data: result.rows[0]
-    });
+
+    const result = await pool.query(
+      `INSERT INTO school_calendar (date, year, month, day, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, NOW(), NOW()) RETURNING *`,
+      [date, year, month, day, status]
+    );
+
+    res.status(201).json({ success: true, message: 'School calendar entry berhasil ditambahkan', data: result.rows[0] });
   } catch (error) {
     console.error('Error creating school calendar:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Terjadi kesalahan saat membuat school calendar',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan', error: error.message });
   }
 });
 
-// UPDATE school calendar
-router.patch('/:id', async (req, res) => {
+// PUT update school calendar entry
+router.put('/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const { status } = req.body;
-    
-    // Cek apakah calendar ada
-    const checkCalendar = await pool.query(
-      'SELECT id FROM school_calendar WHERE id = $1',
-      [id]
+    const { date, status } = req.body;
+
+    let year, month, day;
+    if (date) {
+      const dateObj = new Date(date);
+      year = dateObj.getFullYear();
+      month = dateObj.getMonth() + 1;
+      day = dateObj.getDate();
+    }
+
+    const result = await pool.query(
+      `UPDATE school_calendar SET
+       date = COALESCE($1, date), year = COALESCE($2, year), month = COALESCE($3, month),
+       day = COALESCE($4, day), status = COALESCE($5, status), updated_at = NOW()
+       WHERE id = $6 RETURNING *`,
+      [date || null, year || null, month || null, day || null, status || null, id]
     );
-    
-    if (checkCalendar.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'School calendar tidak ditemukan'
-      });
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'School calendar entry tidak ditemukan' });
     }
-    
-    // Validasi status
-    if (status && !['aktif', 'libur'].includes(status)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Status harus aktif atau libur'
-      });
-    }
-    
-    const query = `
-      UPDATE school_calendar 
-      SET status = $1, updated_at = NOW()
-      WHERE id = $2
-      RETURNING *
-    `;
-    
-    const result = await pool.query(query, [status, id]);
-    
-    res.json({
-      success: true,
-      message: 'School calendar berhasil diupdate',
-      data: result.rows[0]
-    });
+
+    res.json({ success: true, message: 'School calendar entry berhasil diupdate', data: result.rows[0] });
   } catch (error) {
     console.error('Error updating school calendar:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Terjadi kesalahan saat mengupdate school calendar',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan', error: error.message });
   }
 });
 
-// DELETE school calendar
-router.delete('/:id', async (req, res) => {
+// DELETE school calendar entry
+router.delete('/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    
-    const query = 'DELETE FROM school_calendar WHERE id = $1 RETURNING id';
-    const result = await pool.query(query, [id]);
-    
+    const result = await pool.query('DELETE FROM school_calendar WHERE id = $1 RETURNING *', [id]);
+
     if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'School calendar tidak ditemukan'
-      });
+      return res.status(404).json({ success: false, message: 'School calendar entry tidak ditemukan' });
     }
-    
-    res.json({
-      success: true,
-      message: 'School calendar berhasil dihapus'
-    });
+
+    res.json({ success: true, message: 'School calendar entry berhasil dihapus' });
   } catch (error) {
     console.error('Error deleting school calendar:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Terjadi kesalahan saat menghapus school calendar',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan', error: error.message });
   }
 });
 

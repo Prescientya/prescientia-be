@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
+const { localDateStr } = require('../utils/dateHelper');
 const { requireStudent, requireTeacher } = require('../middlewares/auth.middleware');
 
 // ============================================================
@@ -69,7 +70,7 @@ router.post('/student', requireStudent, async (req, res) => {
     }
 
     const today = new Date();
-    const dateStr = today.toISOString().split('T')[0];
+    const dateStr = localDateStr(today);
 
     // Check if already submitted for today
     const existing = await pool.query(
@@ -134,7 +135,7 @@ router.post('/teacher', requireTeacher, async (req, res) => {
     }
 
     const today = new Date();
-    const dateStr = today.toISOString().split('T')[0];
+    const dateStr = localDateStr(today);
 
     // Check if already submitted for today
     const existing = await pool.query(
@@ -258,8 +259,8 @@ router.get('/pending/class/:class_id', requireTeacher, async (req, res) => {
     const waliCheck = await pool.query(
       `SELECT 1 FROM teacher_class_roles WHERE teacher_id = $1 AND class_id = $2 AND role = 'wali_kelas'
        UNION
-       SELECT 1 FROM classes WHERE homeroom_teacher_id = $1 AND id = $2`,
-      [teacher_id, classId]
+       SELECT 1 FROM classes WHERE homeroom_teacher_id = $3 AND id = $4`,
+      [teacher_id, classId, teacher_id, classId]
     );
 
     if (waliCheck.rows.length === 0) {
@@ -320,8 +321,8 @@ router.patch('/approve/wali/:id', requireTeacher, async (req, res) => {
     const waliCheck = await pool.query(
       `SELECT 1 FROM teacher_class_roles WHERE teacher_id = $1 AND class_id = $2 AND role = 'wali_kelas'
        UNION
-       SELECT 1 FROM classes WHERE homeroom_teacher_id = $1 AND id = $2`,
-      [teacher_id, letterData.class_id]
+       SELECT 1 FROM classes WHERE homeroom_teacher_id = $3 AND id = $4`,
+      [teacher_id, letterData.class_id, teacher_id, letterData.class_id]
     );
 
     if (waliCheck.rows.length === 0) {
@@ -437,7 +438,7 @@ router.get('/pending/all', async (req, res) => {
       SELECT al.*,
         CASE WHEN al.user_type = 'student' THEN s.name ELSE t.name END as name,
         CASE WHEN al.user_type = 'student' THEN s.nis ELSE NULL END as nis,
-        c.name as class_name
+        CONCAT(COALESCE(c.major, ''), ' ', COALESCE(c.class, '')) as class_name
       FROM absence_letters al
       LEFT JOIN students s ON al.student_id = s.id
       LEFT JOIN teachers t ON al.teacher_id = t.id
@@ -651,7 +652,7 @@ router.get('/', async (req, res) => {
       `SELECT al.*,
         CASE WHEN al.user_type = 'student' THEN s.name ELSE t.name END as name,
         CASE WHEN al.user_type = 'student' THEN s.nis ELSE NULL END as nis,
-        c.name as class_name
+        CONCAT(COALESCE(c.major, ''), ' ', COALESCE(c.class, '')) as class_name
        FROM absence_letters al
        LEFT JOIN students s ON al.student_id = s.id
        LEFT JOIN teachers t ON al.teacher_id = t.id

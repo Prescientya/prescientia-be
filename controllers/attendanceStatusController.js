@@ -26,12 +26,12 @@ async function getCurrentPeriod() {
     `SELECT id, sequence, start_time, end_time, activity_type
      FROM class_periods
      WHERE day = $1
-       AND start_time <= $2::time
-       AND end_time > $2::time
+       AND start_time <= $2
+       AND end_time > $3
        AND activity_type = 'lesson'
      ORDER BY sequence ASC
      LIMIT 1`,
-    [day, currentTime]
+    [day, currentTime, currentTime]
   );
 
   return result.rows.length > 0 ? result.rows[0] : null;

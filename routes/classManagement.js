@@ -59,27 +59,9 @@ router.get('/attendance/today', requireStudent, async (req, res) => {
     const calendar_id = calendarQuery.rows.length > 0 ? calendarQuery.rows[0].id : null;
     
     // Query untuk mendapatkan semua siswa di kelas dengan status kehadiran (jika ada)
-    // MySQL version (commented out — uses correlated subquery):
-    /*
+    // MySQL version: correlated subquery (no DISTINCT ON / LATERAL)
     const query = `
       SELECT
-        s.id as student_id, s.nis, s.name, s.gender,
-        sa.id as attendance_id, sa.status, sa.check_in_time, sa.check_out_time,
-        sa.source, sa.created_at, sa.updated_at
-      FROM students s
-      LEFT JOIN student_attendances sa ON sa.id = (
-        SELECT id FROM student_attendances
-        WHERE student_id = s.id AND class_id = $1
-          AND DATE(created_at) = DATE($2)
-        ORDER BY created_at DESC LIMIT 1
-      )
-      WHERE s.class_id = $1
-      ORDER BY s.id, s.name
-    `;
-    */
-    // PostgreSQL version: DISTINCT ON + LEFT JOIN LATERAL
-    const query = `
-      SELECT DISTINCT ON (s.id)
         s.id as student_id,
         s.nis,
         s.name,
@@ -94,19 +76,18 @@ router.get('/attendance/today', requireStudent, async (req, res) => {
         sad.approval_status,
         sad.status as requested_status
       FROM students s
-      LEFT JOIN LATERAL (
-        SELECT id, status, check_in_time, check_out_time, source, created_at, updated_at
-        FROM student_attendances
-        WHERE student_id = s.id AND class_id = $1
-          AND DATE(created_at AT TIME ZONE 'UTC') = DATE($2::date)
-        ORDER BY created_at DESC LIMIT 1
-      ) sa ON true
+      LEFT JOIN student_attendances sa ON sa.id = (
+        SELECT sa2.id FROM student_attendances sa2
+        WHERE sa2.student_id = s.id AND sa2.class_id = $1
+          AND DATE(sa2.created_at) = DATE($2)
+        ORDER BY sa2.created_at DESC LIMIT 1
+      )
       LEFT JOIN student_attendance_details sad ON sad.attendance_id = sa.id
-      WHERE s.class_id = $1
+      WHERE s.class_id = $3
       ORDER BY s.id, s.name
     `;
     
-    const result = await pool.query(query, [class_id, date]);
+    const result = await pool.query(query, [class_id, date, class_id]);
     
     // Kategorikan siswa berdasarkan status
     const present = [];

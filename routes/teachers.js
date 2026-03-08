@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const bcrypt = require('bcrypt');
-const { requireTeacher } = require('../middlewares/auth.middleware');
+const { requireTeacher, requireAdmin } = require('../middlewares/auth.middleware');
 const teacherScheduleController = require('../controllers/teacherScheduleController');
 const teacherClassController = require('../controllers/teacherClassController');
 
@@ -48,7 +48,7 @@ router.post('/homeroom/attendance/:detailId/reject', requireTeacher, teacherClas
 // ==================== TEACHERS CRUD ====================
 
 // GET all teachers
-router.get('/', async (req, res) => {
+router.get('/', requireAdmin, async (req, res) => {
   try {
     const { page = 1, limit = 10, department, name } = req.query;
     const offset = (page - 1) * limit;
@@ -121,7 +121,7 @@ router.get('/', async (req, res) => {
 });
 
 // GET teacher by ID (only numeric IDs)
-router.get('/:id(\\d+)', async (req, res) => {
+router.get('/:id(\\d+)', requireAdmin, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (Number.isNaN(id)) {
@@ -162,7 +162,7 @@ router.get('/:id(\\d+)', async (req, res) => {
 });
 
 // CREATE teacher (with user)
-router.post('/', async (req, res) => {
+router.post('/', requireAdmin, async (req, res) => {
   const client = await pool.connect();
   
   try {
@@ -260,7 +260,7 @@ router.post('/', async (req, res) => {
 });
 
 // UPDATE teacher
-router.patch('/:id(\\d+)', async (req, res) => {
+router.patch('/:id(\\d+)', requireAdmin, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (Number.isNaN(id)) {
@@ -378,7 +378,7 @@ router.patch('/:id(\\d+)', async (req, res) => {
 });
 
 // DELETE teacher — hard delete; deletes the linked user which cascades to teacher via FK
-router.delete('/:id(\\d+)', async (req, res) => {
+router.delete('/:id(\\d+)', requireAdmin, async (req, res) => {
   const client = await pool.connect();
   
   try {

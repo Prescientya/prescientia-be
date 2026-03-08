@@ -1,9 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
+const { requireAuth } = require('../middlewares/auth.middleware');
 
 // POST - Create new device change request (manual submission)
-router.post('/', async (req, res) => {
+router.post('/', requireAuth, async (req, res) => {
   try {
     const { user_id, device_id_old, device_id_new, submitted_by } = req.body;
     

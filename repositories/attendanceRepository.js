@@ -19,11 +19,10 @@ const findAlphaWithoutDetailsByStudent = async (studentId) => {
     ORDER BY date DESC
   `;
   */
-  // PostgreSQL version: to_char and ::date casts
   const q = `
         SELECT sa.id AS attendance_id,
-          to_char(COALESCE(sc.date::date, sa.created_at::date), 'YYYY-MM-DD') AS date,
-          to_char(COALESCE(sc.date::date, sa.created_at::date), 'FMDay') AS day_name,
+          DATE_FORMAT(COALESCE(DATE(sc.date), DATE(sa.created_at)), '%Y-%m-%d') AS date,
+          DAYNAME(COALESCE(DATE(sc.date), DATE(sa.created_at))) AS day_name,
           sa.status,
           sad.id AS detail_id,
           sad.status AS detail_status,

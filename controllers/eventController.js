@@ -1,4 +1,5 @@
 const pool = require('../config/database');
+const { localDateStr } = require('../utils/dateHelper');
 
 /**
  * GET /api/events
@@ -25,7 +26,7 @@ async function getEvents(req, res) {
   try {
     const { status, page = 1, limit = 20 } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
-    const today = new Date().toISOString().split('T')[0];
+    const today = localDateStr(new Date());
 
     const isTeacher = !!req.user.teacher_id;
     const isStudent = !!req.user.student_id;
@@ -60,15 +61,15 @@ async function getEvents(req, res) {
           OR (
             e.target_audience = 'kelas'
             AND (
-              et.class_id = $${paramIndex}
+              et.class_id = $${paramIndex + 1}
               OR et.grade = c.class
               OR et.major = c.major
             )
           )
         )
       `;
-      params.push(studentClassId);
-      paramIndex++;
+      params.push(studentClassId, studentClassId);
+      paramIndex += 2;
     } else {
       return res.status(403).json({
         success: false,
@@ -78,9 +79,9 @@ async function getEvents(req, res) {
 
     // Optional status filter
     if (status === 'aktif') {
-      query += ` AND e.release_date <= $${paramIndex} AND e.end_date >= $${paramIndex}`;
-      params.push(today);
-      paramIndex++;
+      query += ` AND e.release_date <= $${paramIndex} AND e.end_date >= $${paramIndex + 1}`;
+      params.push(today, today);
+      paramIndex += 2;
     } else if (status === 'terjadwal') {
       query += ` AND e.release_date > $${paramIndex}`;
       params.push(today);
@@ -128,10 +129,10 @@ async function getEvents(req, res) {
           //                ELSE c.class END, ' ', COALESCE(c.major, '')) AS class_name
           //  FROM event_targets et LEFT JOIN classes c ON c.id = et.class_id WHERE et.event_id = ?`
           //
-          // PostgreSQL version: || concat + ::text cast
+          // MySQL version: CONCAT()
           `SELECT et.id, et.class_id, et.grade, et.major,
-                  (CASE c.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
-                         ELSE c.class::text END || ' ' || COALESCE(c.major::text, '')) AS class_name
+                  CONCAT(CASE c.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
+                         ELSE c.class END, ' ', COALESCE(c.major, '')) AS class_name
            FROM event_targets et
            LEFT JOIN classes c ON c.id = et.class_id
            WHERE et.event_id = $1`,
@@ -188,7 +189,7 @@ async function getEventDetail(req, res) {
     }
 
     const row = eventResult.rows[0];
-    const today = new Date().toISOString().split('T')[0];
+    const today = localDateStr(new Date());
 
     const event = {
       id: row.id,
@@ -213,10 +214,10 @@ async function getEventDetail(req, res) {
         //                ELSE c.class END, ' ', COALESCE(c.major, '')) AS class_name
         //  FROM event_targets et LEFT JOIN classes c ON c.id = et.class_id WHERE et.event_id = ?`
         //
-        // PostgreSQL version: || concat + ::text cast
+        // MySQL version: CONCAT()
         `SELECT et.id, et.class_id, et.grade, et.major,
-                (CASE c.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
-                       ELSE c.class::text END || ' ' || COALESCE(c.major::text, '')) AS class_name
+                CONCAT(CASE c.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
+                       ELSE c.class END, ' ', COALESCE(c.major, '')) AS class_name
          FROM event_targets et
          LEFT JOIN classes c ON c.id = et.class_id
          WHERE et.event_id = $1`,
@@ -244,8 +245,8 @@ async function getEventDetail(req, res) {
  * Helper: determine event status from dates.
  */
 function _getEventStatus(releaseDate, endDate, today) {
-  const release = new Date(releaseDate).toISOString().split('T')[0];
-  const end = new Date(endDate).toISOString().split('T')[0];
+  const release = localDateStr(new Date(releaseDate));
+  const end = localDateStr(new Date(endDate));
 
   if (today < release) return 'terjadwal';
   if (today > end) return 'selesai';

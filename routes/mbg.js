@@ -2,11 +2,12 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const bcrypt = require('bcrypt');
+const { requireAdmin } = require('../middlewares/auth.middleware');
 
 // ==================== PETUGAS MBG CRUD ====================
 
 // GET all petugas mbg
-router.get('/petugas', async (req, res) => {
+router.get('/petugas', requireAdmin, async (req, res) => {
   try {
     const { page = 1, limit = 10 } = req.query;
     const offset = (page - 1) * limit;
@@ -45,7 +46,7 @@ router.get('/petugas', async (req, res) => {
 });
 
 // GET petugas mbg by ID
-router.get('/petugas/:id', async (req, res) => {
+router.get('/petugas/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     
@@ -80,7 +81,7 @@ router.get('/petugas/:id', async (req, res) => {
 });
 
 // CREATE petugas mbg
-router.post('/petugas', async (req, res) => {
+router.post('/petugas', requireAdmin, async (req, res) => {
   try {
     const { username, password } = req.body;
     
@@ -132,7 +133,7 @@ router.post('/petugas', async (req, res) => {
 });
 
 // UPDATE petugas mbg
-router.patch('/petugas/:id', async (req, res) => {
+router.patch('/petugas/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { username, password } = req.body;
@@ -206,7 +207,7 @@ router.patch('/petugas/:id', async (req, res) => {
 });
 
 // DELETE petugas mbg (soft delete)
-router.delete('/petugas/:id', async (req, res) => {
+router.delete('/petugas/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     
@@ -242,7 +243,7 @@ router.delete('/petugas/:id', async (req, res) => {
 // ==================== PIRING MBG CRUD ====================
 
 // GET all piring mbg
-router.get('/piring', async (req, res) => {
+router.get('/piring', requireAdmin, async (req, res) => {
   try {
     const { page = 1, limit = 10 } = req.query;
     const offset = (page - 1) * limit;
@@ -279,7 +280,7 @@ router.get('/piring', async (req, res) => {
 });
 
 // GET piring mbg by ID
-router.get('/piring/:id', async (req, res) => {
+router.get('/piring/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     
@@ -314,7 +315,7 @@ router.get('/piring/:id', async (req, res) => {
 });
 
 // CREATE piring mbg
-router.post('/piring', async (req, res) => {
+router.post('/piring', requireAdmin, async (req, res) => {
   try {
     const { stok = 0, tanggal_distribusi } = req.body;
     
@@ -342,7 +343,7 @@ router.post('/piring', async (req, res) => {
 });
 
 // UPDATE piring mbg
-router.patch('/piring/:id', async (req, res) => {
+router.patch('/piring/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { stok, tanggal_distribusi } = req.body;
@@ -397,7 +398,7 @@ router.patch('/piring/:id', async (req, res) => {
 });
 
 // DELETE piring mbg
-router.delete('/piring/:id', async (req, res) => {
+router.delete('/piring/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     
@@ -428,14 +429,14 @@ router.delete('/piring/:id', async (req, res) => {
 // ==================== MBG CLASS DAILY CRUD ====================
 
 // GET all mbg class daily
-router.get('/class-daily', async (req, res) => {
+router.get('/class-daily', requireAdmin, async (req, res) => {
   try {
     const { page = 1, limit = 10, piring_mbg_id, class_id } = req.query;
     const offset = (page - 1) * limit;
     
     let query = `
       SELECT mcd.id, mcd.piring_mbg_id, mcd.class_id, mcd.total_students,
-             mcd.attended_students, mcd.returned_plates, mcd.class_code,
+             mcd.attended_students, mcd.returned_plates, mcd.given_plates,
              mcd.student_representative, mcd.created_at, mcd.updated_at,
              p.stok, p.tanggal_distribusi,
              c.class as class_level, c.major as class_major
@@ -504,13 +505,13 @@ router.get('/class-daily', async (req, res) => {
 });
 
 // GET mbg class daily by ID
-router.get('/class-daily/:id', async (req, res) => {
+router.get('/class-daily/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     
     const query = `
       SELECT mcd.id, mcd.piring_mbg_id, mcd.class_id, mcd.total_students,
-             mcd.attended_students, mcd.returned_plates, mcd.class_code,
+             mcd.attended_students, mcd.returned_plates, mcd.given_plates,
              mcd.student_representative, mcd.created_at, mcd.updated_at,
              p.stok, p.tanggal_distribusi,
              c.class as class_level, c.major as class_major
@@ -545,9 +546,9 @@ router.get('/class-daily/:id', async (req, res) => {
 });
 
 // CREATE mbg class daily
-router.post('/class-daily', async (req, res) => {
+router.post('/class-daily', requireAdmin, async (req, res) => {
   try {
-    let { piring_mbg_id, class_id, total_students, attended_students = 0, returned_plates = 0, class_code, student_representative } = req.body || {};
+    let { piring_mbg_id, class_id, total_students, attended_students = 0, returned_plates = 0, student_representative } = req.body || {};
 
     // Validasi input
     if (!piring_mbg_id || !class_id) {
@@ -589,12 +590,12 @@ router.post('/class-daily', async (req, res) => {
     }
 
     const insertQ = `
-      INSERT INTO mbg_class_daily (piring_mbg_id, class_id, total_students, attended_students, returned_plates, class_code, student_representative, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+      INSERT INTO mbg_class_daily (piring_mbg_id, class_id, total_students, attended_students, returned_plates, student_representative, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
       RETURNING id, piring_mbg_id, class_id, total_students, attended_students, returned_plates, student_representative, created_at, updated_at
     `;
 
-    const insertR = await pool.query(insertQ, [piring_mbg_id, class_id, total_students, attended_students, returned_plates, class_code, student_representative]);
+    const insertR = await pool.query(insertQ, [piring_mbg_id, class_id, total_students, attended_students, returned_plates, student_representative]);
     const dailyData = insertR.rows[0];
 
     // Kurangi stok piring_mbg sesuai attended_students (tidak boleh negatif)
@@ -640,10 +641,10 @@ router.post('/class-daily', async (req, res) => {
 });
 
 // UPDATE mbg class daily
-router.patch('/class-daily/:id', async (req, res) => {
+router.patch('/class-daily/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const { total_students, attended_students, returned_plates, class_code, student_representative } = req.body;
+    const { total_students, attended_students, returned_plates, student_representative } = req.body;
     
     // Cek apakah data ada
     const checkData = await pool.query(
@@ -680,12 +681,6 @@ router.patch('/class-daily/:id', async (req, res) => {
       paramIndex++;
     }
     
-    if (class_code !== undefined) {
-      query += `, class_code = $${paramIndex}`;
-      params.push(class_code);
-      paramIndex++;
-    }
-    
     if (student_representative !== undefined) {
       query += `, student_representative = $${paramIndex}`;
       params.push(student_representative);
@@ -713,7 +708,7 @@ router.patch('/class-daily/:id', async (req, res) => {
 });
 
 // DELETE mbg class daily
-router.delete('/class-daily/:id', async (req, res) => {
+router.delete('/class-daily/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     
@@ -744,7 +739,7 @@ router.delete('/class-daily/:id', async (req, res) => {
 // ==================== MBG TEACHER EXCESS CRUD ====================
 
 // GET all mbg teacher excess
-router.get('/teacher-excess', async (req, res) => {
+router.get('/teacher-excess', requireAdmin, async (req, res) => {
   try {
     const { page = 1, limit = 10, piring_mbg_id, teacher_id } = req.query;
     const offset = (page - 1) * limit;
@@ -819,7 +814,7 @@ router.get('/teacher-excess', async (req, res) => {
 });
 
 // GET mbg teacher excess by ID
-router.get('/teacher-excess/:id', async (req, res) => {
+router.get('/teacher-excess/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     
@@ -859,7 +854,7 @@ router.get('/teacher-excess/:id', async (req, res) => {
 });
 
 // CREATE mbg teacher excess
-router.post('/teacher-excess', async (req, res) => {
+router.post('/teacher-excess', requireAdmin, async (req, res) => {
   try {
     const { piring_mbg_id, teacher_id, quantity = 0, location, notes } = req.body;
     
@@ -897,7 +892,7 @@ router.post('/teacher-excess', async (req, res) => {
 });
 
 // UPDATE mbg teacher excess
-router.patch('/teacher-excess/:id', async (req, res) => {
+router.patch('/teacher-excess/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { quantity, location, notes } = req.body;
@@ -958,7 +953,7 @@ router.patch('/teacher-excess/:id', async (req, res) => {
 });
 
 // DELETE mbg teacher excess
-router.delete('/teacher-excess/:id', async (req, res) => {
+router.delete('/teacher-excess/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     

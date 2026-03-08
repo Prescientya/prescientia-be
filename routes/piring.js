@@ -1,9 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
+const { requireAuth, requireAdmin } = require('../middlewares/auth.middleware');
 
 // Get total siswa untuk stok piring MBG
-router.get('/stok-total', async (req, res) => {
+router.get('/stok-total', requireAuth, async (req, res) => {
   try {
     const query = `
       SELECT COUNT(*) as total_siswa
@@ -32,7 +33,7 @@ router.get('/stok-total', async (req, res) => {
 });
 
 // Get semua data piring MBG
-router.get('/list', async (req, res) => {
+router.get('/list', requireAuth, async (req, res) => {
   try {
     const query = `
       SELECT 
@@ -62,7 +63,7 @@ router.get('/list', async (req, res) => {
 });
 
 // Create piring MBG baru with optional manual stok and tanggal_distribusi
-router.post('/create', async (req, res) => {
+router.post('/create', requireAdmin, async (req, res) => {
   // Accept optional fields; if body empty or fields absent, we'll default.
   let { tanggal_distribusi, stok } = req.body || {};
 
@@ -134,7 +135,7 @@ router.post('/create', async (req, res) => {
 });
 
 // Update stok piring MBG berdasarkan total siswa terbaru
-router.patch('/update-stok/:id', async (req, res) => {
+router.patch('/update-stok/:id', requireAdmin, async (req, res) => {
   const { id } = req.params;
 
   try {
@@ -184,7 +185,7 @@ router.patch('/update-stok/:id', async (req, res) => {
 // (Route /class-summary/:piring_mbg_id telah dihapus — gunakan /class-summary/date/:date)
 
 // Create mbg_class_daily record
-router.post('/daily/create', async (req, res) => {
+router.post('/daily/create', requireAuth, async (req, res) => {
   const {
     piring_mbg_id,
     class_id,
@@ -367,7 +368,7 @@ router.post('/daily/create', async (req, res) => {
 });
 
 // Update returned_plates for MBG class daily by ID
-router.patch('/daily/returned-plates/:id', async (req, res) => {
+router.patch('/daily/returned-plates/:id', requireAuth, async (req, res) => {
   const { id } = req.params;
   const { returned_plates } = req.body || {};
 
@@ -458,7 +459,7 @@ router.patch('/daily/returned-plates/:id', async (req, res) => {
 
 // GET /api/piring/class-summary/date/:date
 // Menampilkan summary kelas untuk distribusi piring berdasarkan tanggal (YYYY-MM-DD)
-router.get('/class-summary/date/:date', async (req, res) => {
+router.get('/class-summary/date/:date', requireAuth, async (req, res) => {
   const { date } = req.params;
 
   try {
@@ -483,9 +484,7 @@ router.get('/class-summary/date/:date', async (req, res) => {
     const classQuery = `
       SELECT 
         c.id as class_id,
-        -- MySQL: CONCAT(COALESCE(c.major, ''), ' ', COALESCE(c.class, '')) as class_name,
-        -- PostgreSQL: || concatenation with ::text casts
-        (COALESCE(c.major::text, '') || ' ' || COALESCE(c.class::text, '')) as class_name,
+        CONCAT(COALESCE(c.major, ''), ' ', COALESCE(c.class, '')) as class_name,
         c.class as grade,
         COUNT(DISTINCT s.id) as total_students,
         COALESCE(COUNT(DISTINCT sa.student_id), 0) as attended_students_today,
@@ -501,12 +500,12 @@ router.get('/class-summary/date/:date', async (req, res) => {
       FROM classes c
       LEFT JOIN students s ON c.id = s.class_id
       LEFT JOIN student_attendances sa ON s.id = sa.student_id AND DATE(sa.check_in_time) = DATE($1)
-      LEFT JOIN LATERAL (
-        SELECT * FROM mbg_class_daily 
-        WHERE class_id = c.id AND piring_mbg_id = $2
-        ORDER BY created_at DESC 
+      LEFT JOIN mbg_class_daily mcd_latest ON mcd_latest.id = (
+        SELECT mcd2.id FROM mbg_class_daily mcd2
+        WHERE mcd2.class_id = c.id AND mcd2.piring_mbg_id = $2
+        ORDER BY mcd2.created_at DESC 
         LIMIT 1
-      ) mcd_latest ON TRUE
+      )
       GROUP BY c.id, c.major, c.class, mcd_latest.id, mcd_latest.attended_students, mcd_latest.given_plates, mcd_latest.returned_plates, mcd_latest.student_representative, mcd_latest.created_at
       ORDER BY class_name
     `;

@@ -10,8 +10,9 @@ router.get('/test', (req, res) => {
 });
 
 // GET user by NIS (student) and password - returns user+student info (no password)
-router.get('/user/siswa', async (req, res) => {
-  const { nis, password } = req.query;
+// Changed to POST to avoid password in URL query parameters
+router.post('/user/siswa', async (req, res) => {
+  const { nis, password } = req.body;
   try {
     if (!nis || !password) {
       return res.status(400).json({ success: false, message: 'nis dan password harus disertakan' });
@@ -53,8 +54,9 @@ router.get('/user/siswa', async (req, res) => {
 });
 
 // GET user by NIP (teacher) and password - returns user+teacher info (no password)
-router.get('/user/guru', async (req, res) => {
-  const { nip, password } = req.query;
+// Changed to POST to avoid password in URL query parameters
+router.post('/user/guru', async (req, res) => {
+  const { nip, password } = req.body;
   try {
     if (!nip || !password) {
       return res.status(400).json({ success: false, message: 'nip dan password harus disertakan' });
@@ -117,7 +119,7 @@ router.get('/validate-token', async (req, res) => {
       return res.status(401).json({ success: false, message: 'Format token tidak valid.' });
     }
     const token = parts[1];
-    const secret = process.env.JWT_SECRET || 'change_this_secret';
+    const secret = process.env.JWT_SECRET;
 
     let decoded;
     try {
@@ -165,8 +167,8 @@ router.get('/validate-token', async (req, res) => {
       try {
         const qRoles = `
           SELECT tcr.role, tcr.class_id,
-                 (CASE c.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
-                        ELSE c.class::text END || ' ' || COALESCE(c.major::text, '')) AS class_name
+                 CONCAT(CASE c.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
+                        ELSE c.class END, ' ', COALESCE(c.major, '')) AS class_name
           FROM teacher_class_roles tcr
           LEFT JOIN classes c ON c.id = tcr.class_id
           WHERE tcr.teacher_id = $1
@@ -187,8 +189,8 @@ router.get('/validate-token', async (req, res) => {
         try {
           const qHomeroom = `
             SELECT c.id AS class_id,
-                   (CASE c.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
-                          ELSE c.class::text END || ' ' || COALESCE(c.major::text, '')) AS class_name
+                   CONCAT(CASE c.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
+                          ELSE c.class END, ' ', COALESCE(c.major, '')) AS class_name
             FROM classes c
             WHERE c.homeroom_teacher_id = $1`;
           const rHomeroom = await pool.query(qHomeroom, [decoded.teacher_id]);
@@ -258,7 +260,7 @@ router.get('/validate-token', async (req, res) => {
           console.warn('validate-token: Could not fetch student class_role:', err.message);
         }
         try {
-          const qClass = `SELECT (CASE class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII' ELSE class::text END || ' ' || COALESCE(major::text, '')) as class_name FROM classes WHERE id = $1`;
+          const qClass = `SELECT CONCAT(CASE class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII' ELSE class END, ' ', COALESCE(major, '')) as class_name FROM classes WHERE id = $1`;
           const rClass = await pool.query(qClass, [classId]);
           if (rClass.rows.length > 0) {
             className = rClass.rows[0].class_name ? rClass.rows[0].class_name.trim() : null;
@@ -276,6 +278,23 @@ router.get('/validate-token', async (req, res) => {
         class_id: classId,
         class_name: className,
       });
+    } else if (decoded.user_type === 'admin' && decoded.admin_id) {
+      const adminResult = await pool.query('SELECT id, name FROM admins WHERE id = $1', [decoded.admin_id]);
+      if (adminResult.rows.length === 0) {
+        return res.status(401).json({
+          success: false,
+          message: 'Data admin Anda telah dihapus. Silakan hubungi superadmin.',
+          account_deleted: true,
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        valid: true,
+        user_type: 'admin',
+        admin_id: decoded.admin_id,
+        name: adminResult.rows[0].name,
+      });
     }
 
     return res.status(200).json({ success: true, valid: true });
@@ -289,7 +308,6 @@ router.get('/validate-token', async (req, res) => {
 
 // Login endpoint untuk Siswa (Student)
 router.post('/login/siswa', async (req, res) => {
-  console.log('Login Siswa request received:', req.body);
   const { nisn, password, device_id } = req.body;
 
   try {
@@ -310,8 +328,8 @@ router.post('/login/siswa', async (req, res) => {
         s.phone_number, s.address, s.class_id, s.photo_profile,
         u.id as user_id, u.email, u.password, u.is_active, u.device_id,
         scr.role as class_role,
-        (CASE c.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
-         ELSE c.class::text END || ' ' || COALESCE(c.major::text, '')) as class_name
+        CONCAT(CASE c.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
+         ELSE c.class END, ' ', COALESCE(c.major, '')) as class_name
       FROM students s
       INNER JOIN users u ON s.user_id = u.id
       LEFT JOIN student_class_roles scr ON s.id = scr.student_id AND s.class_id = scr.class_id
@@ -382,13 +400,9 @@ router.post('/login/siswa', async (req, res) => {
     };
 
     // Sign token
-    // Student tokens are permanent by default — students cannot be force-logged-out
-    // by expiry. Set JWT_STUDENT_EXPIRE (e.g. '10y') in .env only if a time-bounded
-    // policy is ever needed in the future.
-    const studentSignOptions = process.env.JWT_STUDENT_EXPIRE
-      ? { expiresIn: process.env.JWT_STUDENT_EXPIRE }
-      : {};
-    const token = jwt.sign(payload, process.env.JWT_SECRET || 'change_this_secret', studentSignOptions);
+    // Student tokens expire after 30 days — students must re-login monthly
+    const studentSignOptions = { expiresIn: process.env.JWT_STUDENT_EXPIRE || '30d' };
+    const token = jwt.sign(payload, process.env.JWT_SECRET, studentSignOptions);
 
     res.json({
       success: true,
@@ -422,7 +436,6 @@ router.post('/login/siswa', async (req, res) => {
 
 // Login endpoint untuk Guru (Teacher)
 router.post('/login/guru', async (req, res) => {
-  console.log('Login Guru request received:', req.body);
   const { nip, password, device_id } = req.body;
 
   try {
@@ -512,10 +525,8 @@ router.post('/login/guru', async (req, res) => {
     try {
       const qRoles = `
         SELECT tcr.role, tcr.class_id,
-               -- MySQL: CONCAT(CASE c.class WHEN 10 THEN 'X' ... END, ' ', COALESCE(c.major, '')) AS class_name
-               -- PostgreSQL: || concatenation with ::text casts
-               (CASE c.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
-                      ELSE c.class::text END || ' ' || COALESCE(c.major::text, '')) AS class_name
+               CONCAT(CASE c.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
+                      ELSE c.class END, ' ', COALESCE(c.major, '')) AS class_name
         FROM teacher_class_roles tcr
         LEFT JOIN classes c ON c.id = tcr.class_id
         WHERE tcr.teacher_id = $1
@@ -540,8 +551,8 @@ router.post('/login/guru', async (req, res) => {
       try {
         const qHomeroom = `
           SELECT c.id AS class_id,
-                 (CASE c.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
-                        ELSE c.class::text END || ' ' || COALESCE(c.major::text, '')) AS class_name
+                 CONCAT(CASE c.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
+                        ELSE c.class END, ' ', COALESCE(c.major, '')) AS class_name
           FROM classes c
           WHERE c.homeroom_teacher_id = $1`;
         const rHomeroom = await pool.query(qHomeroom, [teacher.teacher_id]);
@@ -597,9 +608,9 @@ router.post('/login/guru', async (req, res) => {
       homeroom_classes: homeroomClassesValue
     };
 
-    // Sign token — teacher tokens follow the standard expiry policy
-    const teacherSignOptions = { expiresIn: process.env.JWT_TEACHER_EXPIRE || process.env.JWT_EXPIRE || '7d' };
-    const token = jwt.sign(payload, process.env.JWT_SECRET || 'change_this_secret', teacherSignOptions);
+    // Sign token — teacher tokens expire after 30 days
+    const teacherSignOptions = { expiresIn: process.env.JWT_TEACHER_EXPIRE || '30d' };
+    const token = jwt.sign(payload, process.env.JWT_SECRET, teacherSignOptions);
 
     res.json({
       success: true,
@@ -633,7 +644,6 @@ router.post('/login/guru', async (req, res) => {
 
 // Login endpoint untuk Petugas MBG
 router.post('/login/petugas', async (req, res) => {
-  console.log('Login Petugas MBG request received:', req.body);
   const { username, password } = req.body;
 
   try {
@@ -699,7 +709,6 @@ router.post('/login/petugas', async (req, res) => {
 
 // Login endpoint untuk Admin
 router.post('/login/admin', async (req, res) => {
-  console.log('Login Admin request received:', req.body);
   const { email, password, device_id } = req.body;
 
   try {
@@ -786,6 +795,16 @@ router.post('/login/admin', async (req, res) => {
 
     delete admin.password;
 
+    // Build JWT payload for admin
+    const payload = {
+      user_id: admin.user_id,
+      admin_id: admin.admin_id,
+      user_type: 'admin'
+    };
+
+    const adminSignOptions = { expiresIn: process.env.JWT_ADMIN_EXPIRE || '7d' };
+    const token = jwt.sign(payload, process.env.JWT_SECRET, adminSignOptions);
+
     res.json({
       success: true,
       message: 'Login berhasil',
@@ -798,7 +817,8 @@ router.post('/login/admin', async (req, res) => {
         phone_number: admin.phone_number,
         photo_profile: admin.photo_profile,
         device_id: device_id,
-        role: 'admin'
+        role: 'admin',
+        token
       }
     });
   } catch (error) {

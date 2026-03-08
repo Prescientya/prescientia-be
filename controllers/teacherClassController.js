@@ -1,17 +1,13 @@
 const pool = require('../config/database');
+const { localDateStr } = require('../utils/dateHelper');
 
 /**
  * SQL fragment: formats class name as "X RPL 1" (Roman grade + major).
- *
- * MySQL version (commented out — uses CONCAT() and no type casts):
- * // return `CONCAT(CASE ${classAlias}.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
- * //          ELSE ${classAlias}.class END, ' ', COALESCE(${classAlias}.major, ''))`;
- *
- * PostgreSQL version: || concatenation and ::text casts.
+ * Uses CONCAT() for MySQL compatibility.
  */
 function classNameSQL(classAlias) {
-  return `(CASE ${classAlias}.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
-           ELSE ${classAlias}.class::text END || ' ' || COALESCE(${classAlias}.major::text, ''))`;
+  return `CONCAT(CASE ${classAlias}.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
+           ELSE ${classAlias}.class END, ' ', COALESCE(${classAlias}.major, ''))`;
 }
 
 /**
@@ -254,7 +250,7 @@ const getClassStudents = async (req, res) => {
         class_name: cls.class_name.trim(),
         grade: cls.grade,
         major: cls.major,
-        date: dateParam || new Date().toISOString().split('T')[0],
+        date: dateParam || localDateStr(new Date()),
         summary,
         students
       }
@@ -352,7 +348,7 @@ const getHomeroomStudents = async (req, res) => {
       belum_absen: students.filter(s => !s.attendance).length,
     };
 
-    const displayDate = dateParam || new Date().toISOString().split('T')[0];
+    const displayDate = dateParam || localDateStr(new Date());
 
     res.json({
       success: true,

@@ -17,15 +17,11 @@ function gradeToRoman(grade) {
  * SQL fragment: formats class name as "X RPL 1" (Roman grade + major).
  * @param {string} classAlias - table alias for the classes table (e.g. 'c')
  *
- * MySQL version (commented out — uses CONCAT() and no type casts):
- * // return `CONCAT(CASE ${classAlias}.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
- * //          ELSE ${classAlias}.class END, ' ', COALESCE(${classAlias}.major, ''))`;
- *
- * PostgreSQL version: || concatenation and ::text cast.
+ * Uses CONCAT() for MySQL compatibility.
  */
 function classNameSQL(classAlias) {
-  return `(CASE ${classAlias}.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
-           ELSE ${classAlias}.class::text END || ' ' || COALESCE(${classAlias}.major::text, ''))`;
+  return `CONCAT(CASE ${classAlias}.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
+           ELSE ${classAlias}.class END, ' ', COALESCE(${classAlias}.major, ''))`;
 }
 
 
@@ -372,9 +368,7 @@ const getScheduleToday = async (req, res) => {
             AND stp.subject_id  = ts.subject_id
             AND stp.period_id   = ts.class_period_id
             AND stp.day         = cp.day
-            -- MySQL: CONVERT_TZ to shift UTC→WIB (+07:00) before extracting the date
-            -- AND DATE(CONVERT_TZ(stp.submitted_at, '+00:00', '+07:00')) = CURDATE()
-            AND DATE(stp.submitted_at AT TIME ZONE 'Asia/Jakarta') = CURRENT_DATE
+            AND DATE(CONVERT_TZ(stp.submitted_at, '+00:00', '+07:00')) = CURDATE()
         ) AS is_submitted
       FROM teacher_schedules ts
       INNER JOIN classes      c  ON c.id  = ts.class_id

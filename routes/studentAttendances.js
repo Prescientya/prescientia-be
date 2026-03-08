@@ -1,12 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
-const { requireStudent } = require('../middlewares/auth.middleware');
+const { requireStudent, requireAdmin } = require('../middlewares/auth.middleware');
 
 // ==================== STUDENT ATTENDANCES CRUD ====================
 
 // GET recap/summary student attendance by student_id
-router.get('/recap/:student_id', async (req, res) => {
+router.get('/recap/:student_id', requireStudent, async (req, res) => {
   try {
     const { student_id } = req.params;
 
@@ -16,11 +16,8 @@ router.get('/recap/:student_id', async (req, res) => {
 
     const query = `
       SELECT
-        -- MySQL: DATE_FORMAT(COALESCE(DATE(sc.date), DATE(sa.check_in_time), DATE(sa.created_at)), '%Y-%m-%d') as tanggal,
-        -- MySQL: DAYNAME(COALESCE(DATE(sc.date), DATE(sa.check_in_time), DATE(sa.created_at))) as hari,
-        -- PostgreSQL: to_char with ::date casts
-        to_char(COALESCE(sc.date::date, sa.check_in_time::timestamp::date, sa.created_at::timestamp::date), 'YYYY-MM-DD') as tanggal,
-        to_char(COALESCE(sc.date::date, sa.check_in_time::timestamp::date, sa.created_at::timestamp::date), 'FMDay') as hari,
+        DATE_FORMAT(COALESCE(DATE(sc.date), DATE(sa.check_in_time), DATE(sa.created_at)), '%Y-%m-%d') as tanggal,
+        DAYNAME(COALESCE(DATE(sc.date), DATE(sa.check_in_time), DATE(sa.created_at))) as hari,
         sa.status as status_absensi,
         sa.check_in_time,
         sa.check_out_time
@@ -28,7 +25,7 @@ router.get('/recap/:student_id', async (req, res) => {
       LEFT JOIN school_calendar sc ON sa.calendar_id = sc.id
       WHERE sa.student_id = $1
         AND (sc.status IS NULL OR sc.status != 'libur')
-      ORDER BY COALESCE(sc.date::date, sa.check_in_time::timestamp::date, sa.created_at::timestamp::date) ASC
+      ORDER BY COALESCE(DATE(sc.date), DATE(sa.check_in_time), DATE(sa.created_at)) ASC
     `;
 
     const result = await pool.query(query, [student_id]);
@@ -57,7 +54,7 @@ router.get('/recap/:student_id', async (req, res) => {
 });
 
 // GET all student attendances
-router.get('/', async (req, res) => {
+router.get('/', requireAdmin, async (req, res) => {
   try {
     const { page = 1, limit = 10, student_id, class_id, status } = req.query;
     const offset = (page - 1) * limit;
@@ -224,7 +221,7 @@ router.get('/app', requireStudent, async (req, res) => {
 });
 
 // GET student attendance by ID
-router.get('/:id', async (req, res) => {
+router.get('/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     
@@ -275,7 +272,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // CREATE student attendance
-router.post('/', async (req, res) => {
+router.post('/', requireAdmin, async (req, res) => {
   try {
     const { student_id, class_id, calendar_id, check_in_time, check_out_time, status, source } = req.body;
     
@@ -495,7 +492,7 @@ router.patch('/app/logout', requireStudent, async (req, res) => {
 });
 
 // GET students currently logged in (check_in_time set and check_out_time IS NULL)
-router.get('/app/logged', async (req, res) => {
+router.get('/app/logged', requireAdmin, async (req, res) => {
   try {
     const { class_id, calendar_id, page = 1, limit = 100 } = req.query;
     const offset = (page - 1) * limit;
@@ -547,7 +544,7 @@ router.get('/app/logged', async (req, res) => {
 });
 
 // UPDATE student attendance
-router.patch('/:id', async (req, res) => {
+router.patch('/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { check_in_time, check_out_time, status, source } = req.body;
@@ -623,7 +620,7 @@ router.patch('/:id', async (req, res) => {
 });
 
 // DELETE student attendance
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     

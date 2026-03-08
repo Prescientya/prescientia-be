@@ -1,5 +1,7 @@
 const jwt = require('jsonwebtoken');
 
+const JWT_SECRET = process.env.JWT_SECRET;
+
 // Helper: extract Bearer token from Authorization header
 function extractBearerToken(req) {
   const authHeader = req.headers['authorization'] || req.headers['Authorization'];
@@ -28,14 +30,15 @@ function requireStudent(req, res, next) {
       return res.status(401).json({ success: false, message: 'Token tidak ditemukan. Silakan login.' });
     }
 
-    // Use same secret fallback as used when signing the token in auth route
-    const secret = process.env.JWT_SECRET || 'change_this_secret';
-
-    jwt.verify(token, secret, (err, decoded) => {
+    jwt.verify(token, JWT_SECRET, (err, decoded) => {
       if (err) {
-        // All JWT errors (signature invalid, malformed, etc.) produce the same
-        // response. TokenExpiredError is no longer a distinct case because
-        // student tokens are issued without expiry.
+        if (err.name === 'TokenExpiredError') {
+          return res.status(401).json({
+            success: false,
+            message: 'Token kadaluwarsa. Silakan login kembali dengan NIS dan password Anda untuk memperbarui sesi.',
+            token_expired: true
+          });
+        }
         return res.status(401).json({ success: false, message: 'Token tidak valid. Silakan login kembali.' });
       }
 
@@ -95,13 +98,14 @@ function requireTeacher(req, res, next) {
       return res.status(401).json({ success: false, message: 'Token tidak ditemukan. Silakan login.' });
     }
 
-    // Use same secret fallback as used when signing the token in auth route
-    const secret = process.env.JWT_SECRET || 'change_this_secret';
-
-    jwt.verify(token, secret, (err, decoded) => {
+    jwt.verify(token, JWT_SECRET, (err, decoded) => {
       if (err) {
         if (err.name === 'TokenExpiredError') {
-          return res.status(401).json({ success: false, message: 'Token kadaluwarsa. Silakan login kembali.' });
+          return res.status(401).json({
+            success: false,
+            message: 'Token kadaluwarsa. Silakan login kembali dengan NIP dan password Anda untuk memperbarui sesi.',
+            token_expired: true
+          });
         }
         return res.status(401).json({ success: false, message: 'Token tidak valid.' });
       }
@@ -131,8 +135,88 @@ function requireTeacher(req, res, next) {
   }
 }
 
+// requireAdmin middleware
+// - verifies JWT using process.env.JWT_SECRET
+// - ensures decoded.user_type === 'admin'
+// - attaches decoded payload to req.user
+function requireAdmin(req, res, next) {
+  try {
+    const token = extractBearerToken(req);
+    if (!token) {
+      return res.status(401).json({ success: false, message: 'Token tidak ditemukan. Silakan login.' });
+    }
+
+    jwt.verify(token, JWT_SECRET, (err, decoded) => {
+      if (err) {
+        if (err.name === 'TokenExpiredError') {
+          return res.status(401).json({ success: false, message: 'Token kadaluwarsa. Silakan login kembali.' });
+        }
+        return res.status(401).json({ success: false, message: 'Token tidak valid.' });
+      }
+
+      if (!decoded || decoded.user_type !== 'admin' || !decoded.admin_id) {
+        return res.status(403).json({ success: false, message: 'Akses terlarang. Hanya admin yang dapat mengakses endpoint ini.' });
+      }
+
+      req.user = {
+        user_id: decoded.user_id,
+        admin_id: decoded.admin_id,
+        user_type: decoded.user_type
+      };
+
+      return next();
+    });
+  } catch (error) {
+    console.error('requireAdmin error:', error);
+    return res.status(500).json({ success: false, message: 'Terjadi kesalahan pada server.' });
+  }
+}
+
+// requireAuth middleware — accepts ANY valid JWT (student, teacher, or admin)
+// Use this for endpoints that should be accessible by any logged-in user.
+function requireAuth(req, res, next) {
+  try {
+    const token = extractBearerToken(req);
+    if (!token) {
+      return res.status(401).json({ success: false, message: 'Token tidak ditemukan. Silakan login.' });
+    }
+
+    jwt.verify(token, JWT_SECRET, (err, decoded) => {
+      if (err) {
+        if (err.name === 'TokenExpiredError') {
+          return res.status(401).json({
+            success: false,
+            message: 'Token kadaluwarsa. Silakan login kembali.',
+            token_expired: true
+          });
+        }
+        return res.status(401).json({ success: false, message: 'Token tidak valid.' });
+      }
+
+      if (!decoded || !decoded.user_type) {
+        return res.status(401).json({ success: false, message: 'Token tidak valid.' });
+      }
+
+      req.user = {
+        user_id: decoded.user_id,
+        user_type: decoded.user_type,
+        student_id: decoded.student_id || null,
+        teacher_id: decoded.teacher_id || null,
+        admin_id: decoded.admin_id || null
+      };
+
+      return next();
+    });
+  } catch (error) {
+    console.error('requireAuth error:', error);
+    return res.status(500).json({ success: false, message: 'Terjadi kesalahan pada server.' });
+  }
+}
+
 module.exports = {
   requireStudent,
   requireKM,
-  requireTeacher
+  requireTeacher,
+  requireAdmin,
+  requireAuth
 };

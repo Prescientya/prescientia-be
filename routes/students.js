@@ -2,12 +2,12 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const bcrypt = require('bcrypt');
-const { requireStudent } = require('../middlewares/auth.middleware');
+const { requireStudent, requireAdmin } = require('../middlewares/auth.middleware');
 
 // ==================== STUDENTS CRUD ====================
 
 // GET all students
-router.get('/', async (req, res) => {
+router.get('/', requireAdmin, async (req, res) => {
   try {
     const { page = 1, limit = 10, class_id, name } = req.query;
     const offset = (page - 1) * limit;
@@ -182,7 +182,7 @@ router.get('/profile', requireStudent, async (req, res) => {
 });
 
 // GET student by ID
-router.get('/:id', async (req, res) => {
+router.get('/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     
@@ -222,7 +222,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // CREATE student (with user)
-router.post('/', async (req, res) => {
+router.post('/', requireAdmin, async (req, res) => {
   const client = await pool.connect();
   
   try {
@@ -336,7 +336,7 @@ router.post('/', async (req, res) => {
 });
 
 // UPDATE student
-router.patch('/:id', async (req, res) => {
+router.patch('/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { nis, name, gender, date_of_birth, phone_number, address, class_id, photo_profile } = req.body;
@@ -466,7 +466,7 @@ router.patch('/:id', async (req, res) => {
 });
 
 // DELETE student (hard delete)
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', requireAdmin, async (req, res) => {
   const client = await pool.connect();
   
   try {
