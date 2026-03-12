@@ -180,13 +180,13 @@ router.post('/app/login', requireTeacher, async (req, res) => {
     let existingResult;
     if (calendarId !== null && calendarId !== undefined) {
       existingResult = await pool.query(
-        `SELECT id FROM teacher_attendances WHERE teacher_id = $1 AND calendar_id = $2`,
+        `SELECT id, check_in_time, check_out_time, status FROM teacher_attendances WHERE teacher_id = $1 AND calendar_id = $2`,
         [teacherId, calendarId]
       );
     } else {
       // calendar_id is null — fallback: check by date
       existingResult = await pool.query(
-        `SELECT ta.id FROM teacher_attendances ta
+        `SELECT ta.id, ta.check_in_time, ta.check_out_time, ta.status FROM teacher_attendances ta
          LEFT JOIN school_calendar sc ON ta.calendar_id = sc.id
          WHERE ta.teacher_id = $1 AND DATE(ta.check_in_time) = $2`,
         [teacherId, today]
