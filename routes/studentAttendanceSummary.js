@@ -3,8 +3,131 @@ const router = express.Router();
 const pool = require('../config/database');
 const { requireStudent, requireAuth } = require('../middlewares/auth.middleware');
 
+const parsePeriodQuery = (req) => {
+  const { year, month } = req.query;
+
+  // If neither provided, caller can treat as all-time.
+  if (year == null && month == null) return { hasPeriod: false };
+
+  if (year == null || month == null) {
+    return { error: 'Query year dan month harus diisi bersamaan' };
+  }
+
+  const yearNum = Number(year);
+  const monthNum = Number(month);
+
+  if (!Number.isInteger(yearNum) || !Number.isInteger(monthNum)) {
+    return { error: 'year dan month harus berupa angka bulat' };
+  }
+  if (monthNum < 1 || monthNum > 12) {
+    return { error: 'month harus di rentang 1-12' };
+  }
+
+  return { hasPeriod: true, year: yearNum, month: monthNum };
+};
+
+const buildAttendanceSummary = async ({ studentId, year, month }) => {
+  const hasPeriod = year != null && month != null;
+
+  const params = [studentId];
+  let paramIndex = 2;
+
+  let whereSql = `
+    WHERE sa.student_id = $1
+      AND (sc.status IS NULL OR sc.status != 'libur')
+  `;
+
+  if (hasPeriod) {
+    whereSql += ` AND sc.year = $${paramIndex} AND sc.month = $${paramIndex + 1}`;
+    params.push(year, month);
+    paramIndex += 2;
+  }
+
+  const attendanceQuery = `
+    SELECT
+      COALESCE(SUM(CASE WHEN LOWER(sa.status) IN ('hadir', 'terlambat') THEN 1 ELSE 0 END), 0)::int AS total_present,
+      COALESCE(SUM(CASE WHEN LOWER(sa.status) = 'sakit' THEN 1 ELSE 0 END), 0)::int AS total_sick,
+      COALESCE(SUM(CASE WHEN LOWER(sa.status) = 'izin' THEN 1 ELSE 0 END), 0)::int AS total_permission,
+      COALESCE(SUM(CASE WHEN LOWER(sa.status) IN ('alpa', 'alpha') THEN 1 ELSE 0 END), 0)::int AS total_absent
+    FROM student_attendances sa
+    LEFT JOIN school_calendar sc ON sa.calendar_id = sc.id
+    ${whereSql}
+  `;
+
+  const daysParams = [];
+  let daysWhereSql = '';
+  if (hasPeriod) {
+    daysWhereSql = ' AND year = $1 AND month = $2';
+    daysParams.push(year, month);
+  }
+
+  const effectiveDaysQuery = `
+    SELECT COUNT(*)::int as total_days_effective
+    FROM school_calendar
+    WHERE status = 'aktif'${daysWhereSql}
+  `;
+
+  const holidaysQuery = `
+    SELECT COUNT(*)::int as total_holidays
+    FROM school_calendar
+    WHERE status = 'libur'${daysWhereSql}
+  `;
+
+  const [attendanceResult, effectiveDaysResult, holidaysResult] = await Promise.all([
+    pool.query(attendanceQuery, params),
+    pool.query(effectiveDaysQuery, daysParams),
+    pool.query(holidaysQuery, daysParams)
+  ]);
+
+  const totalsRow = attendanceResult.rows[0] || {};
+  const totalPresent = Number(totalsRow.total_present) || 0;
+  const totalSick = Number(totalsRow.total_sick) || 0;
+  const totalPermission = Number(totalsRow.total_permission) || 0;
+  const totalAbsent = Number(totalsRow.total_absent) || 0;
+
+  const totalDaysEffective = Number(effectiveDaysResult.rows[0] && effectiveDaysResult.rows[0].total_days_effective) || 0;
+  const totalHolidays = Number(holidaysResult.rows[0] && holidaysResult.rows[0].total_holidays) || 0;
+
+  return {
+    student_id: Number(studentId),
+    period: hasPeriod ? { year, month } : null,
+    total_present: totalPresent,
+    total_hadir: totalPresent,
+    total_sick: totalSick,
+    total_sakit: totalSick,
+    total_permission: totalPermission,
+    total_izin: totalPermission,
+    total_absent: totalAbsent,
+    total_alpha: totalAbsent,
+    total_days_effective: totalDaysEffective,
+    total_holidays: totalHolidays,
+    total_libur: totalHolidays
+  };
+};
+
 // GET student attendance summary (used by prescientia_fe)
 // GET /api/student-attendance-summary/:studentId
+// Also supports monthly period:
+// - GET /api/student-attendance-summary/:studentId?year=2026&month=3
+// - GET /api/student-attendance-summary/:studentId/monthly?year=2026&month=3
+
+router.get('/:studentId/monthly', requireAuth, async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    if (!studentId) return res.status(400).json({ success: false, message: 'Student ID harus diisi' });
+
+    const period = parsePeriodQuery(req);
+    if (period.error) return res.status(400).json({ success: false, message: period.error });
+    if (!period.hasPeriod) return res.status(400).json({ success: false, message: 'Query year dan month wajib diisi untuk endpoint monthly' });
+
+    const data = await buildAttendanceSummary({ studentId, year: period.year, month: period.month });
+    return res.json({ success: true, data });
+  } catch (error) {
+    console.error('Error fetching student attendance summary (monthly):', error);
+    return res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengambil summary kehadiran siswa', error: error.message });
+  }
+});
+
 router.get('/:studentId', requireAuth, async (req, res) => {
   try {
     const { studentId } = req.params;
@@ -13,70 +136,17 @@ router.get('/:studentId', requireAuth, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Student ID harus diisi' });
     }
 
-    // Count attendance by status
-    const attendanceQuery = `
-      SELECT
-        sa.status,
-        COUNT(*) as count
-      FROM student_attendances sa
-      LEFT JOIN school_calendar sc ON sa.calendar_id = sc.id
-      WHERE sa.student_id = $1
-        AND (sc.status IS NULL OR sc.status != 'libur')
-      GROUP BY sa.status
-    `;
-    const attendanceResult = await pool.query(attendanceQuery, [studentId]);
+    const period = parsePeriodQuery(req);
+    if (period.error) return res.status(400).json({ success: false, message: period.error });
 
-    // Count effective school days (aktif days in calendar)
-    const effectiveDaysQuery = `
-      SELECT COUNT(*) as total_days_effective
-      FROM school_calendar
-      WHERE status = 'aktif'
-    `;
-    const effectiveDaysResult = await pool.query(effectiveDaysQuery);
+    const data = period.hasPeriod
+      ? await buildAttendanceSummary({ studentId, year: period.year, month: period.month })
+      : await buildAttendanceSummary({ studentId });
 
-    // Count holidays
-    const holidaysQuery = `
-      SELECT COUNT(*) as total_holidays
-      FROM school_calendar
-      WHERE status = 'libur'
-    `;
-    const holidaysResult = await pool.query(holidaysQuery);
-
-    // Build summary from attendance counts
-    let totalPresent = 0, totalSick = 0, totalPermission = 0, totalAbsent = 0;
-
-    for (const row of attendanceResult.rows) {
-      const status = (row.status || '').toLowerCase();
-      const count = parseInt(row.count) || 0;
-      if (status === 'hadir') totalPresent = count;
-      else if (status === 'sakit') totalSick = count;
-      else if (status === 'izin') totalPermission = count;
-      else if (status === 'alpa' || status === 'alpha') totalAbsent = count;
-    }
-
-    const totalDaysEffective = parseInt(effectiveDaysResult.rows[0].total_days_effective) || 0;
-    const totalHolidays = parseInt(holidaysResult.rows[0].total_holidays) || 0;
-
-    res.json({
-      success: true,
-      data: {
-        student_id: parseInt(studentId),
-        total_present: totalPresent,
-        total_hadir: totalPresent,
-        total_sick: totalSick,
-        total_sakit: totalSick,
-        total_permission: totalPermission,
-        total_izin: totalPermission,
-        total_absent: totalAbsent,
-        total_alpha: totalAbsent,
-        total_days_effective: totalDaysEffective,
-        total_holidays: totalHolidays,
-        total_libur: totalHolidays
-      }
-    });
+    return res.json({ success: true, data });
   } catch (error) {
     console.error('Error fetching student attendance summary:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengambil summary kehadiran siswa', error: error.message });
+    return res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengambil summary kehadiran siswa', error: error.message });
   }
 });
 
