@@ -297,8 +297,8 @@ router.post('/attendance/batch-submit', requireStudent, async (req, res) => {
         
         const insertQuery = `
           INSERT INTO student_attendances 
-          (student_id, class_id, calendar_id, status, source, created_at, updated_at)
-          VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+          (student_id, class_id, calendar_id, status, source, updated_by_role, updated_by_teacher_id, change_reason, created_at, updated_at)
+          VALUES ($1, $2, $3, $4, $5, 'system', NULL, $6, NOW(), NOW())
           RETURNING id
         `;
         
@@ -307,7 +307,8 @@ router.post('/attendance/batch-submit', requireStudent, async (req, res) => {
           class_id,
           calendar_id,
           savedStatus,
-          'manual' // source dari petugas absensi kelas
+          'manual', // source dari petugas absensi kelas
+          notes || null
         ]);
         
         const attendance_id = insertResult.rows[0].id;
@@ -480,11 +481,16 @@ router.patch('/attendance/batch-update', requireStudent, async (req, res) => {
         if (!needsApproval) {
           const updateQuery = `
             UPDATE student_attendances 
-            SET status = $1, updated_at = NOW()
+            SET status = $1,
+                source = 'manual',
+                updated_by_role = 'system',
+                updated_by_teacher_id = NULL,
+                change_reason = $3,
+                updated_at = NOW()
             WHERE id = $2
             RETURNING updated_at
           `;
-          await client.query(updateQuery, [savedStatus, attendance_id]);
+          await client.query(updateQuery, [savedStatus, attendance_id, notes || null]);
         }
         
         // Handle attendance details

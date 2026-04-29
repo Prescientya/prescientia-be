@@ -2,10 +2,11 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const { requireAuth, requireAdmin } = require('../middlewares/auth.middleware');
+const { readLimiter } = require('../middlewares/rateLimiter');
 
 // GET school calendar entries with optional filter
 // GET /api/school-calendar?year=2026&month=3&page=1
-router.get('/', async (req, res) => {
+router.get('/', readLimiter, async (req, res) => {
   try {
     const { page = 1, limit = 31, year, month } = req.query;
     const offset = (page - 1) * limit;
@@ -74,7 +75,7 @@ router.get('/', async (req, res) => {
 
 // GET school calendar by date (used by prescientia_fe and prescientia_guru_fe)
 // GET /api/school-calendar/by-date/2026-03-07
-router.get('/by-date/:dateStr', async (req, res) => {
+router.get('/by-date/:dateStr', readLimiter, async (req, res) => {
   try {
     const { dateStr } = req.params;
 

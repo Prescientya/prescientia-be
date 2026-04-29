@@ -3,6 +3,7 @@ const router = express.Router();
 const pool = require('../config/database');
 const bcrypt = require('bcrypt');
 const { requireTeacher, requireAdmin } = require('../middlewares/auth.middleware');
+const { requireTeacherClassScheduleAccess, requireHomeroomClassAccess } = require('../middlewares/teacherAccess.middleware');
 const teacherScheduleController = require('../controllers/teacherScheduleController');
 const teacherClassController = require('../controllers/teacherClassController');
 
@@ -17,13 +18,20 @@ router.get('/schedule/classes', requireTeacher, teacherScheduleController.getSch
 // GET classes the authenticated teacher must teach today (from teacher_schedules)
 router.get('/schedule/today', requireTeacher, teacherScheduleController.getScheduleToday);
 
+// GET classes the authenticated teacher teaches on a specific date
+// Example: /api/teachers/schedule?date=2026-04-27
+router.get('/schedule', requireTeacher, teacherScheduleController.getScheduleByDate);
+
 // ==================== TEACHER CLASS MANAGEMENT ENDPOINTS ====================
 
 // GET all classes taught by authenticated teacher with today's attendance summary
 router.get('/my-classes', requireTeacher, teacherClassController.getTeacherClasses);
 
 // GET students in a specific class with their attendance status
-router.get('/class/:classId/students', requireTeacher, teacherClassController.getClassStudents);
+router.get('/class/:classId/students', requireTeacher, requireTeacherClassScheduleAccess, teacherClassController.getClassStudents);
+
+// PATCH attendance by teacher with explicit period/schedule context
+router.patch('/attendance/:attendanceId', requireTeacher, teacherClassController.updateTeacherAttendanceWithPeriodContext);
 
 // ==================== HOMEROOM (WALI KELAS) ENDPOINTS ====================
 
@@ -37,7 +45,10 @@ router.get('/homeroom/students', requireTeacher, teacherClassController.getHomer
 router.patch('/homeroom/attendance', requireTeacher, teacherClassController.updateHomeroomAttendance);
 
 // GET pending attendance approvals for a homeroom class
-router.get('/homeroom/pending', requireTeacher, teacherClassController.getPendingAttendances);
+router.get('/homeroom/pending', requireTeacher, requireHomeroomClassAccess, teacherClassController.getPendingAttendances);
+
+// GET homeroom period monitor per date
+router.get('/homeroom/period-monitor', requireTeacher, requireHomeroomClassAccess, teacherClassController.getHomeroomPeriodMonitor);
 
 // POST approve a pending attendance detail
 router.post('/homeroom/attendance/:detailId/approve', requireTeacher, teacherClassController.approveAttendance);

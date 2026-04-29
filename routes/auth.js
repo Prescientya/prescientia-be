@@ -3,6 +3,7 @@ const router = express.Router();
 const pool = require('../config/database');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const { authLimiter } = require('../middlewares/rateLimiter');
 
 // Test endpoint
 router.get('/test', (req, res) => {
@@ -11,7 +12,7 @@ router.get('/test', (req, res) => {
 
 // GET user by NIS (student) and password - returns user+student info (no password)
 // Changed to POST to avoid password in URL query parameters
-router.post('/user/siswa', async (req, res) => {
+router.post('/user/siswa', authLimiter, async (req, res) => {
   const { nis, password } = req.body;
   try {
     if (!nis || !password) {
@@ -55,7 +56,7 @@ router.post('/user/siswa', async (req, res) => {
 
 // GET user by NIP (teacher) and password - returns user+teacher info (no password)
 // Changed to POST to avoid password in URL query parameters
-router.post('/user/guru', async (req, res) => {
+router.post('/user/guru', authLimiter, async (req, res) => {
   const { nip, password } = req.body;
   try {
     if (!nip || !password) {
@@ -107,6 +108,220 @@ router.post('/user/guru', async (req, res) => {
  *   200 { success: true, valid: true }              – account exists
  *   401 { success: false, message: '...', account_deleted: true }  – account gone
  *   401 { success: false, message: '...' }          – bad / expired token
+// ==================== PASSWORD CHANGE ENDPOINTS ====================
+
+/**
+ * POST /api/auth/change-password
+ * Allows users (student/teacher/admin) to change their password after first login
+ * Required header: Authorization: Bearer <token>
+ */
+router.post('/change-password', async (req, res) => {
+  try {
+    const authHeader = req.headers['authorization'] || req.headers['Authorization'];
+    if (!authHeader || typeof authHeader !== 'string') {
+      return res.status(401).json({ success: false, message: 'Token tidak ditemukan.' });
+    }
+
+    const parts = authHeader.split(' ');
+    if (parts.length !== 2 || !/^Bearer$/i.test(parts[0])) {
+      return res.status(401).json({ success: false, message: 'Format token tidak valid.' });
+    }
+
+    const token = parts[1];
+    const { old_password, new_password, new_password_confirm } = req.body;
+
+    // Validate input
+    if (!new_password || !new_password_confirm) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password baru dan konfirmasi password harus diisi'
+      });
+    }
+
+    if (new_password !== new_password_confirm) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password baru dan konfirmasi password tidak cocok'
+      });
+    }
+
+    if (new_password.length < 8) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password harus minimal 8 karakter'
+      });
+    }
+
+    // Verify JWT token
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      return res.status(401).json({ success: false, message: 'Token tidak valid atau sudah kedaluwarsa.' });
+    }
+
+    if (!decoded || !decoded.user_id) {
+      return res.status(401).json({ success: false, message: 'Token tidak valid.' });
+    }
+
+    // Get user record
+    const userResult = await pool.query('SELECT id, password, is_active FROM users WHERE id = $1', [decoded.user_id]);
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'User tidak ditemukan' });
+    }
+
+    const user = userResult.rows[0];
+    if (!user.is_active) {
+      return res.status(403).json({ success: false, message: 'Akun tidak aktif' });
+    }
+
+    // If old_password provided, verify it
+    if (old_password) {
+      let hashedPassword = user.password || '';
+      if (hashedPassword.startsWith('$2y$')) {
+        hashedPassword = hashedPassword.replace('$2y$', '$2b$');
+      }
+
+      const isPasswordValid = await bcrypt.compare(old_password, hashedPassword);
+      if (!isPasswordValid) {
+        return res.status(401).json({
+          success: false,
+          message: 'Password lama salah'
+        });
+      }
+    }
+    // If no old_password, it's a first-time password change (admin/system initiated)
+
+    // Hash new password
+    const saltRounds = 10;
+    const hashedNewPassword = await bcrypt.hash(new_password, saltRounds);
+
+    // Update password and set first_login to false
+    await pool.query(
+      'UPDATE users SET password = $1, first_login = false, updated_at = NOW() WHERE id = $2',
+      [hashedNewPassword, decoded.user_id]
+    );
+
+    res.json({
+      success: true,
+      message: 'Password berhasil diubah. Silakan login kembali dengan password baru.'
+    });
+  } catch (error) {
+    console.error('change-password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Terjadi kesalahan pada server'
+    });
+  }
+});
+
+/**
+ * POST /api/auth/admin/reset-password
+ * Admin endpoint to reset user password back to NIS/NIP
+ * Required header: Authorization: Bearer <admin_token>
+ * Body: { user_id, user_type (siswa/guru) }
+ */
+router.post('/admin/reset-password', async (req, res) => {
+  try {
+    const authHeader = req.headers['authorization'] || req.headers['Authorization'];
+    if (!authHeader || typeof authHeader !== 'string') {
+      return res.status(401).json({ success: false, message: 'Token tidak ditemukan.' });
+    }
+
+    const parts = authHeader.split(' ');
+    if (parts.length !== 2 || !/^Bearer$/i.test(parts[0])) {
+      return res.status(401).json({ success: false, message: 'Format token tidak valid.' });
+    }
+
+    const token = parts[1];
+    const { user_id, user_type } = req.body;
+
+    if (!user_id || !user_type) {
+      return res.status(400).json({
+        success: false,
+        message: 'user_id dan user_type harus diisi'
+      });
+    }
+
+    if (!['siswa', 'guru'].includes(user_type)) {
+      return res.status(400).json({
+        success: false,
+        message: 'user_type harus siswa atau guru'
+      });
+    }
+
+    // Verify JWT token (only admin can reset)
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      return res.status(401).json({ success: false, message: 'Token tidak valid atau sudah kedaluwarsa.' });
+    }
+
+    if (!decoded || decoded.user_type !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Hanya admin yang dapat mereset password' });
+    }
+
+    // Get the appropriate NIS/NIP based on user_type
+    let nisOrNip = null;
+    let userName = null;
+
+    if (user_type === 'siswa') {
+      const studentQuery = `
+        SELECT s.nis, s.name
+        FROM students s
+        INNER JOIN users u ON s.user_id = u.id
+        WHERE u.id = $1
+      `;
+      const result = await pool.query(studentQuery, [user_id]);
+      if (result.rows.length === 0) {
+        return res.status(404).json({ success: false, message: 'Siswa tidak ditemukan' });
+      }
+      nisOrNip = result.rows[0].nis;
+      userName = result.rows[0].name;
+    } else if (user_type === 'guru') {
+      const teacherQuery = `
+        SELECT t.nip, t.name
+        FROM teachers t
+        INNER JOIN users u ON t.user_id = u.id
+        WHERE u.id = $1
+      `;
+      const result = await pool.query(teacherQuery, [user_id]);
+      if (result.rows.length === 0) {
+        return res.status(404).json({ success: false, message: 'Guru tidak ditemukan' });
+      }
+      nisOrNip = result.rows[0].nip;
+      userName = result.rows[0].name;
+    }
+
+    // Hash the NIS/NIP as new password
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(nisOrNip, saltRounds);
+
+    // Update password and set first_login to true
+    await pool.query(
+      'UPDATE users SET password = $1, first_login = true, updated_at = NOW() WHERE id = $2',
+      [hashedPassword, user_id]
+    );
+
+    res.json({
+      success: true,
+      message: `Password ${user_type} ${userName} telah direset menjadi ${user_type === 'siswa' ? 'NIS' : 'NIP'} mereka. Mereka harus mengubahnya saat login berikutnya.`,
+      data: {
+        user_id,
+        user_type,
+        name: userName,
+        reset_to: user_type === 'siswa' ? 'NIS' : 'NIP'
+      }
+    });
+  } catch (error) {
+    console.error('admin/reset-password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Terjadi kesalahan pada server'
+    });
+  }
+});
  */
 router.get('/validate-token', async (req, res) => {
   try {
@@ -307,7 +522,7 @@ router.get('/validate-token', async (req, res) => {
 // ==================== LOGIN ENDPOINTS ====================
 
 // Login endpoint untuk Siswa (Student)
-router.post('/login/siswa', async (req, res) => {
+router.post('/login/siswa', authLimiter, async (req, res) => {
   const { nisn, password, device_id } = req.body;
 
   try {
@@ -326,7 +541,7 @@ router.post('/login/siswa', async (req, res) => {
       SELECT 
         s.id as student_id, s.nis, s.name, s.gender, s.date_of_birth,
         s.phone_number, s.address, s.class_id, s.photo_profile,
-        u.id as user_id, u.email, u.password, u.is_active, u.device_id,
+        u.id as user_id, u.email, u.password, u.is_active, u.device_id, u.first_login,
         scr.role as class_role,
         CONCAT(CASE c.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
          ELSE c.class END, ' ', COALESCE(c.major, '')) as class_name
@@ -369,7 +584,6 @@ router.post('/login/siswa', async (req, res) => {
       });
     }
 
-    // Check if device_id differs - inform frontend so it can call POST /api/device-change-requests
     if (student.device_id && String(student.device_id) !== String(device_id)) {
       return res.status(401).json({
         success: false,
@@ -388,19 +602,14 @@ router.post('/login/siswa', async (req, res) => {
     await pool.query('INSERT INTO history_login (user_id, login_at, status, device_id) VALUES ($1, NOW(), $2, $3)', [student.user_id, 'success', device_id]);
 
     delete student.password;
-    // Build JWT payload according to the agreed structure
-    // Include `student_id` explicitly so authorization can use the student identifier
     const payload = {
       user_id: student.user_id,
-      student_id: student.student_id, // mandatory for authorization of attendance records
+      student_id: student.student_id,
       user_type: 'student',
-      // default to 'STUDENT' if no explicit role information available
       student_role: student.student_role || 'STUDENT',
       class_id: student.class_id
     };
 
-    // Sign token
-    // Student tokens expire after 30 days — students must re-login monthly
     const studentSignOptions = { expiresIn: process.env.JWT_STUDENT_EXPIRE || '30d' };
     const token = jwt.sign(payload, process.env.JWT_SECRET, studentSignOptions);
 
@@ -422,7 +631,8 @@ router.post('/login/siswa', async (req, res) => {
         photo_profile: student.photo_profile,
         role: 'siswa',
         class_role: student.class_role || 'pelajar',
-        token // JWT for client to use in Authorization header
+        first_login: !!student.first_login,
+        token
       }
     });
   } catch (error) {
@@ -435,7 +645,7 @@ router.post('/login/siswa', async (req, res) => {
 });
 
 // Login endpoint untuk Guru (Teacher)
-router.post('/login/guru', async (req, res) => {
+router.post('/login/guru', authLimiter, async (req, res) => {
   const { nip, password, device_id } = req.body;
 
   try {
@@ -454,7 +664,7 @@ router.post('/login/guru', async (req, res) => {
       SELECT 
         t.id as teacher_id, t.nip, t.name, t.gender, t.date_of_birth,
         t.phone_number, t.address, t.department, t.photo_profile,
-        u.id as user_id, u.email, u.password, u.is_active, u.device_id, u.role
+        u.id as user_id, u.email, u.password, u.is_active, u.device_id, u.first_login, u.role
       FROM teachers t
       INNER JOIN users u ON t.user_id = u.id
       WHERE t.nip COLLATE "C" = $1 COLLATE "C"
@@ -471,7 +681,6 @@ router.post('/login/guru', async (req, res) => {
 
     const teacher = result.rows[0];
 
-    // Validate that the user account has the 'teacher' role
     if (teacher.role !== 'teacher') {
       return res.status(403).json({
         success: false,
@@ -500,7 +709,6 @@ router.post('/login/guru', async (req, res) => {
       });
     }
 
-    // Check if device_id differs - inform frontend so it can call POST /api/device-change-requests
     if (teacher.device_id && String(teacher.device_id) !== String(device_id)) {
       return res.status(401).json({
         success: false,
@@ -519,8 +727,6 @@ router.post('/login/guru', async (req, res) => {
 
     delete teacher.password;
 
-    // Fetch teacher_class_roles: keeps full objects {role, class_id} so callers
-    // (especially wali_kelas) know exactly which class each role applies to.
     let teacherRoles = [];
     try {
       const qRoles = `
@@ -542,11 +748,7 @@ router.post('/login/guru', async (req, res) => {
       teacherRoles = [];
     }
 
-    // Fallback: if teacher_class_roles has no wali_kelas entry, check classes.homeroom_teacher_id
-    // This covers cases where the admin panel set homeroom_teacher_id but didn't sync teacher_class_roles.
     const hasWaliKelasRole = teacherRoles.some(r => r.role === 'wali_kelas');
-    console.log(`[Login Guru] teacher_id=${teacher.teacher_id}, roles from teacher_class_roles:`, JSON.stringify(teacherRoles));
-    console.log(`[Login Guru] hasWaliKelasRole=${hasWaliKelasRole}`);
     if (!hasWaliKelasRole) {
       try {
         const qHomeroom = `
@@ -556,7 +758,6 @@ router.post('/login/guru', async (req, res) => {
           FROM classes c
           WHERE c.homeroom_teacher_id = $1`;
         const rHomeroom = await pool.query(qHomeroom, [teacher.teacher_id]);
-        console.log(`[Login Guru] Fallback homeroom query returned ${rHomeroom.rows.length} rows for teacher_id=${teacher.teacher_id}:`, JSON.stringify(rHomeroom.rows));
         for (const row of rHomeroom.rows) {
           teacherRoles.push({
             role: 'wali_kelas',
@@ -565,7 +766,6 @@ router.post('/login/guru', async (req, res) => {
           });
         }
 
-        // Auto-heal: insert missing wali_kelas role into teacher_class_roles so future logins are faster
         for (const row of rHomeroom.rows) {
           try {
             const exists = await pool.query(
@@ -577,7 +777,6 @@ router.post('/login/guru', async (req, res) => {
                 `INSERT INTO teacher_class_roles (teacher_id, class_id, role, created_at, updated_at) VALUES ($1, $2, 'wali_kelas', NOW(), NOW())`,
                 [teacher.teacher_id, row.class_id]
               );
-              console.log(`[Login Guru] Auto-healed: inserted wali_kelas role for teacher_id=${teacher.teacher_id}, class_id=${row.class_id}`);
             }
           } catch (healErr) {
             console.warn(`[Login Guru] Auto-heal failed for class_id=${row.class_id}:`, healErr.message);
@@ -588,7 +787,6 @@ router.post('/login/guru', async (req, res) => {
       }
     }
 
-    // Derive homeroom class IDs from wali_kelas roles (single source of truth)
     const homeroomClasses = teacherRoles
       .filter(r => r.role === 'wali_kelas' && r.class_id != null)
       .map(r => r.class_id);
@@ -597,18 +795,15 @@ router.post('/login/guru', async (req, res) => {
       : homeroomClasses.length === 1 ? homeroomClasses[0]
       : homeroomClasses;
 
-    // Build JWT payload for teacher — include full role objects so middleware
-    // can authorize wali_kelas actions without an extra DB lookup.
     const payload = {
       user_id: teacher.user_id,
       teacher_id: teacher.teacher_id,
       user_type: 'teacher',
       department: teacher.department,
-      teacher_roles: teacherRoles,        // array of {role, class_id, class_name}
+      teacher_roles: teacherRoles,
       homeroom_classes: homeroomClassesValue
     };
 
-    // Sign token — teacher tokens expire after 30 days
     const teacherSignOptions = { expiresIn: process.env.JWT_TEACHER_EXPIRE || '30d' };
     const token = jwt.sign(payload, process.env.JWT_SECRET, teacherSignOptions);
 
@@ -628,9 +823,10 @@ router.post('/login/guru', async (req, res) => {
         department: teacher.department,
         photo_profile: teacher.photo_profile,
         role: 'guru',
-        teacher_roles: teacherRoles,       // [{role, class_id, class_name}]
+        teacher_roles: teacherRoles,
         homeroom_classes: homeroomClassesValue,
-        token // JWT for client to use in Authorization header
+        first_login: !!teacher.first_login,
+        token
       }
     });
   } catch (error) {
@@ -643,7 +839,7 @@ router.post('/login/guru', async (req, res) => {
 });
 
 // Login endpoint untuk Petugas MBG
-router.post('/login/petugas', async (req, res) => {
+router.post('/login/petugas', authLimiter, async (req, res) => {
   const { username, password } = req.body;
 
   try {
@@ -708,7 +904,7 @@ router.post('/login/petugas', async (req, res) => {
 });
 
 // Login endpoint untuk Admin
-router.post('/login/admin', async (req, res) => {
+router.post('/login/admin', authLimiter, async (req, res) => {
   const { email, password, device_id } = req.body;
 
   try {

@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
 const dotenv = require('dotenv');
 
 // Load .env BEFORE any code that reads process.env
@@ -65,26 +64,6 @@ app.use(cors({
   },
   credentials: true
 }));
-
-// Global rate limiter — 100 requests per 15 minutes per IP
-const globalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 200,
-  message: { success: false, message: 'Terlalu banyak permintaan. Coba lagi nanti.' },
-  standardHeaders: true,
-  legacyHeaders: false
-});
-app.use(globalLimiter);
-
-// Strict rate limiter for login endpoints — 10 attempts per 15 minutes
-const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  message: { success: false, message: 'Terlalu banyak percobaan login. Coba lagi dalam 15 menit.' },
-  standardHeaders: true,
-  legacyHeaders: false
-});
-app.use('/api/auth/login', loginLimiter);
 
 // Body parsing with size limits
 app.use(express.json({ limit: '1mb' }));

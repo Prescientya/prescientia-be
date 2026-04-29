@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const { requireStudent, requireAdmin } = require('../middlewares/auth.middleware');
+const { readLimiter } = require('../middlewares/rateLimiter');
 
 // POST create history login (used by prescientia_fe)
 router.post('/', requireStudent, async (req, res) => {
@@ -32,7 +33,7 @@ router.post('/', requireStudent, async (req, res) => {
 });
 
 // GET all history logins
-router.get('/', requireAdmin, async (req, res) => {
+router.get('/', requireAdmin, readLimiter, async (req, res) => {
   try {
     const { page = 1, limit = 10, user_id } = req.query;
     const offset = (page - 1) * limit;

@@ -8,44 +8,9 @@ const { requireStudent, requireTeacher } = require('../middlewares/auth.middlewa
 // ABSENCE LETTERS (Surat Izin / Sakit)
 // ============================================================
 // Table: absence_letters
-// Flow for students: pending → approved_wali → approved (by admin) | rejected
-// Flow for teachers: pending → approved (by admin) | rejected
+// Flow for students: pending → approved | rejected
+// Flow for teachers: pending → approved | rejected
 // ============================================================
-
-// --------------------------------------------------
-// Auto-create table if not exists
-// --------------------------------------------------
-(async () => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS absence_letters (
-        id SERIAL PRIMARY KEY,
-        user_type VARCHAR(10) NOT NULL CHECK (user_type IN ('student', 'teacher')),
-        student_id INTEGER,
-        teacher_id INTEGER,
-        class_id INTEGER,
-        calendar_id INTEGER,
-        date DATE NOT NULL,
-        reason VARCHAR(20) NOT NULL CHECK (reason IN ('sakit', 'izin')),
-        description TEXT NOT NULL,
-        status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved_wali', 'approved', 'rejected')),
-        approved_by_wali INTEGER,
-        approved_by_admin INTEGER,
-        approved_wali_at TIMESTAMP,
-        approved_admin_at TIMESTAMP,
-        rejected_by INTEGER,
-        rejected_by_type VARCHAR(10),
-        rejected_at TIMESTAMP,
-        rejection_note TEXT,
-        created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW()
-      );
-    `);
-    console.log('[AbsenceLetters] ✓ Table ensured');
-  } catch (e) {
-    console.error('[AbsenceLetters] Table creation error:', e.message);
-  }
-})();
 
 // --------------------------------------------------
 // POST /student — Student submits an absence letter
@@ -347,14 +312,22 @@ router.patch('/approve/wali/:id', requireTeacher, async (req, res) => {
         );
         if (existingAtt.rows.length > 0) {
           await pool.query(
-            `UPDATE student_attendances SET status = $1, updated_at = NOW() WHERE id = $2`,
-            [approved.reason, existingAtt.rows[0].id]
+            `UPDATE student_attendances
+             SET status = $1,
+                 source = 'wali_kelas',
+                 updated_by_role = 'wali_kelas',
+                 updated_by_teacher_id = $3,
+                 change_reason = $4,
+                 updated_at = NOW()
+             WHERE id = $2`,
+            [approved.reason, existingAtt.rows[0].id, teacher_id, 'Disetujui dari surat izin/sakit oleh wali_kelas']
           );
         } else if (approved.calendar_id) {
           await pool.query(
-            `INSERT INTO student_attendances (student_id, class_id, calendar_id, status, source, created_at)
-             VALUES ($1, $2, $3, $4, 'wali_kelas', NOW())`,
-            [approved.student_id, approved.class_id, approved.calendar_id, approved.reason]
+            `INSERT INTO student_attendances
+             (student_id, class_id, calendar_id, status, source, updated_by_role, updated_by_teacher_id, change_reason, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, 'wali_kelas', 'wali_kelas', $5, $6, NOW(), NOW())`,
+            [approved.student_id, approved.class_id, approved.calendar_id, approved.reason, teacher_id, 'Disetujui dari surat izin/sakit oleh wali_kelas']
           );
         }
 
@@ -428,7 +401,7 @@ router.patch('/reject/:id', requireTeacher, async (req, res) => {
 });
 
 // --------------------------------------------------
-// GET /pending/all — Admin gets all pending letters (students approved_wali + teachers pending)
+// GET /pending/all — Admin gets all pending letters
 // --------------------------------------------------
 router.get('/pending/all', async (req, res) => {
   try {
@@ -515,14 +488,22 @@ router.patch('/approve/admin/:id', async (req, res) => {
         if (existingAtt.rows.length > 0) {
           // Update existing attendance
           await pool.query(
-            `UPDATE student_attendances SET status = $1, updated_at = NOW() WHERE id = $2`,
+            `UPDATE student_attendances
+             SET status = $1,
+                 source = 'manual',
+                 updated_by_role = 'admin',
+                 updated_by_teacher_id = NULL,
+                 change_reason = 'Disetujui admin dari surat izin/sakit',
+                 updated_at = NOW()
+             WHERE id = $2`,
             [approved.reason, existingAtt.rows[0].id]
           );
         } else if (approved.calendar_id) {
           // Create new attendance record
           await pool.query(
-            `INSERT INTO student_attendances (student_id, class_id, calendar_id, status, source, created_at)
-             VALUES ($1, $2, $3, $4, 'manual', NOW())`,
+            `INSERT INTO student_attendances
+             (student_id, class_id, calendar_id, status, source, updated_by_role, updated_by_teacher_id, change_reason, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, 'manual', 'admin', NULL, 'Disetujui admin dari surat izin/sakit', NOW(), NOW())`,
             [approved.student_id, approved.class_id, approved.calendar_id, approved.reason]
           );
         }

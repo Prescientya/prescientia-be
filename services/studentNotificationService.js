@@ -7,9 +7,9 @@ const notifRepo = require('../repositories/notificationRepository');
  * Build notification objects for client consumption.
  * Each item contains attendance_id, date, day_name, status, message, action label and action url.
  */
-const getAlphaNotificationsForStudent = async (studentId) => {
+const getAlpaNotificationsForStudent = async (studentId) => {
   // Fetch attendances that are 'alpa' and have no details recorded yet
-  const rows = await attendanceRepo.findAlphaWithoutDetailsByStudent(studentId);
+  const rows = await attendanceRepo.findAlpaWithoutDetailsByStudent(studentId);
 
   // Map to notification shape. If a detail record exists, include its status and approval_status
   return rows.map(r => {
@@ -131,7 +131,17 @@ const submitAttendanceReason = async ({ studentId, attendanceId, reason, descrip
     // const updatedAttendance = rUpdate.rows[0];
     //
     // PostgreSQL version: RETURNING *
-    let qUpdate = `UPDATE student_attendances SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *`;
+    let qUpdate = `
+      UPDATE student_attendances
+      SET status = $1,
+          source = 'self_report',
+          updated_by_role = 'system',
+          updated_by_teacher_id = NULL,
+          change_reason = 'Siswa mengirim alasan ketidakhadiran via notifikasi',
+          updated_at = NOW()
+      WHERE id = $2
+      RETURNING *
+    `;
     let rUpdate = await client.query(qUpdate, [reason, attendanceId]);
     const updatedAttendance = rUpdate.rows[0];
     console.log(`[submitAttendanceReason] updateAttendanceStatus result:`, updatedAttendance);
@@ -213,6 +223,6 @@ const submitAttendanceReason = async ({ studentId, attendanceId, reason, descrip
 };
 
 module.exports = {
-  getAlphaNotificationsForStudent,
+  getAlpaNotificationsForStudent,
   submitAttendanceReason
 };

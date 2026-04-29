@@ -193,7 +193,7 @@ async function changeAttendanceStatus(req, res) {
           });
         }
 
-        changedByType = 'pengajar';
+        changedByType = 'guru_pengajar';
         changedById = teacherId;
         changedByName = teacherName;
       }
@@ -268,11 +268,30 @@ async function changeAttendanceStatus(req, res) {
     // ============ EKSEKUSI PERUBAHAN ============
 
     // 1. Update status di student_attendances
+    const sourceValue = changedByType === 'wali_kelas'
+      ? 'wali_kelas'
+      : changedByType === 'guru_pengajar'
+        ? 'guru_pengajar'
+        : 'manual';
+
+    const auditRole = changedByType === 'wali_kelas'
+      ? 'wali_kelas'
+      : changedByType === 'guru_pengajar'
+        ? 'guru_pengajar'
+        : 'system';
+
+    const auditTeacherId = auditRole === 'system' ? null : changedById;
+
     await pool.query(
       `UPDATE student_attendances
-       SET status = $1, source = $2, updated_at = NOW()
+       SET status = $1,
+           source = $2,
+           updated_by_role = $4,
+           updated_by_teacher_id = $5,
+           change_reason = $6,
+           updated_at = NOW()
        WHERE id = $3`,
-      [new_status, changedByType, attendance_id]
+      [new_status, sourceValue, attendance_id, auditRole, auditTeacherId, note || null]
     );
 
     // 2. Insert log ke attendance_status_changes

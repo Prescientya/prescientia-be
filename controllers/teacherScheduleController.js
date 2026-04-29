@@ -1,4 +1,5 @@
 const pool = require('../config/database');
+const { localDateStr } = require('../utils/dateHelper');
 
 /**
  * Helper: convert numeric grade (10/11/12) to Roman numeral string used in class names.
@@ -22,6 +23,20 @@ function gradeToRoman(grade) {
 function classNameSQL(classAlias) {
   return `CONCAT(CASE ${classAlias}.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
            ELSE ${classAlias}.class END, ' ', COALESCE(${classAlias}.major, ''))`;
+}
+
+function getDayNameIdFromDate(dateStr) {
+  const d = new Date(`${dateStr}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return null;
+  const daysIndonesian = ['minggu', 'senin', 'selasa', 'rabu', 'kamis', 'jumat', 'sabtu'];
+  return daysIndonesian[d.getDay()];
+}
+
+function isValidDateString(dateStr) {
+  if (typeof dateStr !== 'string') return false;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
+  const d = new Date(`${dateStr}T00:00:00`);
+  return !Number.isNaN(d.getTime());
 }
 
 
@@ -308,8 +323,8 @@ const getScheduleToday = async (req, res) => {
       });
     }
 
-    const daysIndonesian = ['minggu', 'senin', 'selasa', 'rabu', 'kamis', 'jumat', 'sabtu'];
-    const todayDay = daysIndonesian[new Date().getDay()];
+    const targetDate = localDateStr(new Date());
+    const todayDay = getDayNameIdFromDate(targetDate);
 
     if (todayDay === 'minggu' || todayDay === 'sabtu') {
       return res.json({
@@ -321,7 +336,8 @@ const getScheduleToday = async (req, res) => {
 
     // Check today's school calendar
     const calendarResult = await pool.query(
-      `SELECT id, date, status, notes FROM school_calendar WHERE date = CURRENT_DATE LIMIT 1`
+      `SELECT id, date, status, notes FROM school_calendar WHERE date = $1::date LIMIT 1`,
+      [targetDate]
     );
 
     if (calendarResult.rows.length === 0) {
@@ -368,7 +384,7 @@ const getScheduleToday = async (req, res) => {
             AND stp.subject_id  = ts.subject_id
             AND stp.period_id   = ts.class_period_id
             AND stp.day         = cp.day
-            AND DATE(CONVERT_TZ(stp.submitted_at, '+00:00', '+07:00')) = CURDATE()
+            AND (stp.submitted_at AT TIME ZONE 'Asia/Jakarta')::date = $3::date
         ) AS is_submitted
       FROM teacher_schedules ts
       INNER JOIN classes      c  ON c.id  = ts.class_id
@@ -379,7 +395,7 @@ const getScheduleToday = async (req, res) => {
       ORDER BY cp.sequence ASC, ts.class_id ASC
     `;
 
-    const scheduleResult = await pool.query(scheduleQuery, [teacherId, todayDay]);
+    const scheduleResult = await pool.query(scheduleQuery, [teacherId, todayDay, targetDate]);
 
     const schedules = scheduleResult.rows.map(row => ({
       schedule_id: row.schedule_id,
@@ -424,9 +440,173 @@ const getScheduleToday = async (req, res) => {
   }
 };
 
+/**
+ * GET /api/teachers/schedule?date=YYYY-MM-DD
+ *
+ * Returns teacher schedule for any specific date (including historical dates).
+ * If `date` is omitted, defaults to today.
+ */
+const getScheduleByDate = async (req, res) => {
+  try {
+    const teacherId = req.user && Number(req.user.teacher_id);
+    if (!teacherId || isNaN(teacherId)) {
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized: teacher_id tidak ditemukan di token'
+      });
+    }
+
+    const dateParam = req.query.date || localDateStr(new Date());
+    if (!isValidDateString(dateParam)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Format date tidak valid. Gunakan YYYY-MM-DD'
+      });
+    }
+
+    const dayName = getDayNameIdFromDate(dateParam);
+    if (!dayName) {
+      return res.status(400).json({
+        success: false,
+        message: 'Tanggal tidak valid'
+      });
+    }
+
+    if (dayName === 'minggu' || dayName === 'sabtu') {
+      return res.json({
+        success: true,
+        message: `Tidak ada jadwal mengajar pada ${dateParam}`,
+        data: {
+          date: dateParam,
+          day: dayName,
+          teacher_id: teacherId,
+          calendar: null,
+          schedules: []
+        }
+      });
+    }
+
+    const calendarResult = await pool.query(
+      `SELECT id, date, status, notes FROM school_calendar WHERE date = $1::date LIMIT 1`,
+      [dateParam]
+    );
+
+    if (calendarResult.rows.length === 0) {
+      return res.json({
+        success: true,
+        message: `Tanggal ${dateParam} tidak terdaftar di kalender sekolah`,
+        data: {
+          date: dateParam,
+          day: dayName,
+          teacher_id: teacherId,
+          calendar: null,
+          schedules: []
+        }
+      });
+    }
+
+    const calendarRow = calendarResult.rows[0];
+    if (calendarRow.status === 'libur') {
+      return res.json({
+        success: true,
+        message: `Tanggal ${dateParam} adalah hari libur${calendarRow.notes ? ': ' + calendarRow.notes : ''}`,
+        data: {
+          date: dateParam,
+          day: dayName,
+          teacher_id: teacherId,
+          calendar: {
+            id: calendarRow.id,
+            date: calendarRow.date,
+            status: calendarRow.status,
+            notes: calendarRow.notes
+          },
+          schedules: []
+        }
+      });
+    }
+
+    const scheduleQuery = `
+      SELECT
+        ts.id        AS schedule_id,
+        ts.class_id,
+        ${classNameSQL('c')} AS class_name,
+        c.class  AS grade,
+        c.major,
+        ts.subject_id,
+        s.name   AS subject_name,
+        cp.id    AS period_id,
+        cp.start_time,
+        cp.end_time,
+        cp.sequence,
+        cp.activity_type,
+        EXISTS (
+          SELECT 1
+          FROM submit_teacher_periods stp
+          WHERE stp.teacher_id  = ts.teacher_id
+            AND stp.class_id    = ts.class_id
+            AND stp.subject_id  = ts.subject_id
+            AND stp.period_id   = ts.class_period_id
+            AND stp.day         = cp.day
+            AND (stp.submitted_at AT TIME ZONE 'Asia/Jakarta')::date = $3::date
+        ) AS is_submitted
+      FROM teacher_schedules ts
+      INNER JOIN classes      c  ON c.id  = ts.class_id
+      INNER JOIN subjects     s  ON s.id  = ts.subject_id
+      INNER JOIN class_periods cp ON cp.id = ts.class_period_id
+      WHERE ts.teacher_id = $1
+        AND cp.day = $2
+      ORDER BY cp.sequence ASC, ts.class_id ASC
+    `;
+
+    const scheduleResult = await pool.query(scheduleQuery, [teacherId, dayName, dateParam]);
+
+    const schedules = scheduleResult.rows.map(row => ({
+      schedule_id: row.schedule_id,
+      class_id: row.class_id,
+      class_name: row.class_name.trim(),
+      grade: row.grade,
+      major: row.major,
+      subject_id: row.subject_id,
+      subject_name: row.subject_name,
+      period_id: row.period_id,
+      start_time: row.start_time,
+      end_time: row.end_time,
+      sequence: row.sequence,
+      activity_type: row.activity_type,
+      is_submitted: row.is_submitted
+    }));
+
+    return res.json({
+      success: true,
+      message: `Ditemukan ${schedules.length} jadwal mengajar pada ${dateParam}`,
+      data: {
+        date: dateParam,
+        day: dayName,
+        teacher_id: teacherId,
+        calendar: {
+          id: calendarRow.id,
+          date: calendarRow.date,
+          status: calendarRow.status,
+          notes: calendarRow.notes
+        },
+        total_schedules: schedules.length,
+        schedules
+      }
+    });
+  } catch (error) {
+    console.error('getScheduleByDate error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Terjadi kesalahan pada server',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
 module.exports = {
   submitTeacherPeriod,
   getScheduleClasses,
-  getScheduleToday
+  getScheduleToday,
+  getScheduleByDate
 };
 

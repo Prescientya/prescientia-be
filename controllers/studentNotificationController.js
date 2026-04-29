@@ -11,7 +11,7 @@ const getNotifications = async (req, res) => {
     const studentId = req.user && Number(req.user.student_id);
     if (!studentId || isNaN(studentId)) return res.status(401).json({ success: false, message: 'Unauthorized: student_id tidak ditemukan di token' });
 
-    const data = await service.getAlphaNotificationsForStudent(studentId);
+    const data = await service.getAlpaNotificationsForStudent(studentId);
     return res.json({ success: true, data });
   } catch (error) {
     console.error('Controller getNotifications error:', error);

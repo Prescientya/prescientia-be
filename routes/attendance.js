@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const { requireAuth, requireStudent } = require('../middlewares/auth.middleware');
+const { attendanceLimiter, readLimiter } = require('../middlewares/rateLimiter');
 
 // ==================== WIFI-BASED ATTENDANCE VALIDATION ====================
 
@@ -99,7 +100,7 @@ function matchWifiNetworks(scannedWifi, dbNetworks) {
  *   "message": "Not connected to authorized school Wi-Fi"
  * }
  */
-router.post('/scan', requireStudent, async (req, res) => {
+router.post('/scan', requireStudent, attendanceLimiter, async (req, res) => {
   try {
     const { user_id, scanned_wifi } = req.body;
 
@@ -209,7 +210,7 @@ router.post('/scan', requireStudent, async (req, res) => {
  * Check if user has already submitted attendance today.
  * Useful to prevent duplicate attendance submissions.
  */
-router.get('/check/:user_id', requireAuth, async (req, res) => {
+router.get('/check/:user_id', requireAuth, readLimiter, async (req, res) => {
   try {
     const { user_id } = req.params;
 
@@ -257,7 +258,7 @@ router.get('/check/:user_id', requireAuth, async (req, res) => {
  * Returns the end_time of the last lesson period for today's day of week.
  * Used by Flutter apps to schedule checkout notifications.
  */
-router.get('/last-period-today', requireAuth, async (req, res) => {
+router.get('/last-period-today', requireAuth, readLimiter, async (req, res) => {
   try {
     const days = ['minggu', 'senin', 'selasa', 'rabu', 'kamis', 'jumat', 'sabtu'];
     const now = new Date();

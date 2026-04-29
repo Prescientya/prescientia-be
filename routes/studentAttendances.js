@@ -3,6 +3,16 @@ const router = express.Router();
 const pool = require('../config/database');
 const { requireStudent, requireAdmin } = require('../middlewares/auth.middleware');
 
+const ALLOWED_SOURCES = ['digital_wifi', 'guru_pengajar', 'wali_kelas', 'self_report', 'manual', 'auto_system'];
+
+function normalizeSource(value, fallback = 'digital_wifi') {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  if (trimmed === '') return fallback;
+  return trimmed;
+}
+
 // ==================== STUDENT ATTENDANCES CRUD ====================
 
 // GET recap/summary student attendance by student_id
@@ -293,7 +303,11 @@ router.post('/', requireAdmin, async (req, res) => {
     }
     
     // Validasi source jika diisi
-    if (source && !['digital_wifi', 'guru_pengajar', 'wali_kelas', 'self_report', 'manual'].includes(source)) {
+    const normalizedSource = source === undefined || source === null || String(source).trim() === ''
+      ? null
+      : String(source).trim();
+
+    if (normalizedSource && !ALLOWED_SOURCES.includes(normalizedSource)) {
       return res.status(400).json({
         success: false,
         message: 'Source tidak valid'
@@ -301,13 +315,21 @@ router.post('/', requireAdmin, async (req, res) => {
     }
     
     const query = `
-      INSERT INTO student_attendances (student_id, class_id, calendar_id, check_in_time, check_out_time, status, source, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+      INSERT INTO student_attendances
+      (student_id, class_id, calendar_id, check_in_time, check_out_time, status, source, updated_by_role, updated_by_teacher_id, change_reason, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, 'admin', NULL, $8, NOW(), NOW())
       RETURNING *
     `;
     
     const result = await pool.query(query, [
-      student_id, class_id, calendar_id, check_in_time, check_out_time, status, source
+      student_id,
+      class_id,
+      calendar_id,
+      check_in_time,
+      check_out_time,
+      status,
+      normalizedSource,
+      'Dibuat manual oleh admin'
     ]);
     
     res.status(201).json({
@@ -329,7 +351,8 @@ router.post('/', requireAdmin, async (req, res) => {
 // Automatically resolves today's school_calendar if calendar_id not provided.
 router.post('/app/login', requireStudent, async (req, res) => {
   try {
-    let { calendar_id, source = 'digital_wifi', check_in_time } = req.body;
+    let { calendar_id, source, check_in_time } = req.body;
+    source = normalizeSource(source, 'digital_wifi');
 
     // student_id and class_id will be taken from token (req.user)
     const student_id = req.user && req.user.student_id;
@@ -364,7 +387,7 @@ router.post('/app/login', requireStudent, async (req, res) => {
       calendar_id = todayCal.id;
     }
 
-    if (!['digital_wifi', 'guru_pengajar', 'wali_kelas', 'self_report', 'manual'].includes(source)) {
+    if (!ALLOWED_SOURCES.includes(source)) {
       return res.status(400).json({ success: false, message: 'Source tidak valid' });
     }
 
@@ -397,7 +420,14 @@ router.post('/app/login', requireStudent, async (req, res) => {
       // Special case: record exists but check_in_time was never set — patch it in
       if (!existing.check_in_time && check_in_time) {
         const upd = await pool.query(
-          'UPDATE student_attendances SET check_in_time = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
+          `UPDATE student_attendances
+           SET check_in_time = $1,
+               updated_by_role = 'system',
+               updated_by_teacher_id = NULL,
+               change_reason = 'Auto patch check_in_time saat login app',
+               updated_at = NOW()
+           WHERE id = $2
+           RETURNING *`,
           [check_in_time, existing.id]
         );
         return res.json({ success: true, message: 'Student attendance updated (check_in_time)', data: upd.rows[0] });
@@ -426,8 +456,9 @@ router.post('/app/login', requireStudent, async (req, res) => {
     }
 
     const insertQ = `
-      INSERT INTO student_attendances (student_id, class_id, calendar_id, check_in_time, status, source, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+      INSERT INTO student_attendances
+      (student_id, class_id, calendar_id, check_in_time, status, source, updated_by_role, updated_by_teacher_id, change_reason, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, 'system', NULL, 'Auto create attendance saat login app', NOW(), NOW())
       RETURNING *
     `;
     const insertR = await pool.query(insertQ, [student_id, class_id, calendar_id, inTime, status, source]);
@@ -479,7 +510,16 @@ router.patch('/app/logout', requireStudent, async (req, res) => {
     }
 
     const outTime = check_out_time || new Date().toISOString();
-    const updQ = 'UPDATE student_attendances SET check_out_time = $1, updated_at = NOW() WHERE id = $2 RETURNING *';
+    const updQ = `
+      UPDATE student_attendances
+      SET check_out_time = $1,
+          updated_by_role = 'system',
+          updated_by_teacher_id = NULL,
+          change_reason = 'Auto set check_out_time saat logout app',
+          updated_at = NOW()
+      WHERE id = $2
+      RETURNING *
+    `;
     const updR = await pool.query(updQ, [outTime, attendanceId]);
     if (updR.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Attendance tidak ditemukan' });
@@ -547,7 +587,7 @@ router.get('/app/logged', requireAdmin, async (req, res) => {
 router.patch('/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const { check_in_time, check_out_time, status, source } = req.body;
+    const { check_in_time, check_out_time, status, source, change_reason } = req.body;
     
     // Validasi: pastikan id adalah angka yang valid
     const parsedId = parseInt(id, 10);
@@ -571,9 +611,17 @@ router.patch('/:id', requireAdmin, async (req, res) => {
       });
     }
     
-    let query = 'UPDATE student_attendances SET updated_at = NOW()';
+    let query = `
+      UPDATE student_attendances
+      SET updated_at = NOW(),
+          updated_by_role = 'admin',
+          updated_by_teacher_id = NULL,
+          change_reason = $1
+    `;
     const params = [];
-    let paramIndex = 1;
+    let paramIndex = 2;
+
+    params.push(change_reason || 'Diubah manual oleh admin');
     
     if (check_in_time !== undefined) {
       query += `, check_in_time = $${paramIndex}`;
@@ -594,8 +642,12 @@ router.patch('/:id', requireAdmin, async (req, res) => {
     }
     
     if (source !== undefined) {
+      const normalizedPatchSource = normalizeSource(source, 'manual');
+      if (!ALLOWED_SOURCES.includes(normalizedPatchSource)) {
+        return res.status(400).json({ success: false, message: 'Source tidak valid' });
+      }
       query += `, source = $${paramIndex}`;
-      params.push(source);
+      params.push(normalizedPatchSource);
       paramIndex++;
     }
     

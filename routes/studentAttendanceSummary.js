@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const { requireStudent, requireAuth } = require('../middlewares/auth.middleware');
+const { readLimiter } = require('../middlewares/rateLimiter');
 
 const parsePeriodQuery = (req) => {
   const { year, month } = req.query;
@@ -48,7 +49,7 @@ const buildAttendanceSummary = async ({ studentId, year, month }) => {
       COALESCE(SUM(CASE WHEN LOWER(sa.status) IN ('hadir', 'terlambat') THEN 1 ELSE 0 END), 0)::int AS total_present,
       COALESCE(SUM(CASE WHEN LOWER(sa.status) = 'sakit' THEN 1 ELSE 0 END), 0)::int AS total_sick,
       COALESCE(SUM(CASE WHEN LOWER(sa.status) = 'izin' THEN 1 ELSE 0 END), 0)::int AS total_permission,
-      COALESCE(SUM(CASE WHEN LOWER(sa.status) IN ('alpa', 'alpha') THEN 1 ELSE 0 END), 0)::int AS total_absent
+      COALESCE(SUM(CASE WHEN LOWER(sa.status) = 'alpa' THEN 1 ELSE 0 END), 0)::int AS total_absent
     FROM student_attendances sa
     LEFT JOIN school_calendar sc ON sa.calendar_id = sc.id
     ${whereSql}
@@ -98,7 +99,7 @@ const buildAttendanceSummary = async ({ studentId, year, month }) => {
     total_permission: totalPermission,
     total_izin: totalPermission,
     total_absent: totalAbsent,
-    total_alpha: totalAbsent,
+    total_alpa: totalAbsent,
     total_days_effective: totalDaysEffective,
     total_holidays: totalHolidays,
     total_libur: totalHolidays
@@ -111,7 +112,7 @@ const buildAttendanceSummary = async ({ studentId, year, month }) => {
 // - GET /api/student-attendance-summary/:studentId?year=2026&month=3
 // - GET /api/student-attendance-summary/:studentId/monthly?year=2026&month=3
 
-router.get('/:studentId/monthly', requireAuth, async (req, res) => {
+router.get('/:studentId/monthly', requireAuth, readLimiter, async (req, res) => {
   try {
     const { studentId } = req.params;
     if (!studentId) return res.status(400).json({ success: false, message: 'Student ID harus diisi' });
@@ -128,7 +129,7 @@ router.get('/:studentId/monthly', requireAuth, async (req, res) => {
   }
 });
 
-router.get('/:studentId', requireAuth, async (req, res) => {
+router.get('/:studentId', requireAuth, readLimiter, async (req, res) => {
   try {
     const { studentId } = req.params;
 

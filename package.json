@@ -4,8 +4,9 @@
   "description": "Prescientia Backend API",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js",
+    "start": "node dist/server.js",
+    "dev": "ts-node-dev server.js",
+    "build": "tsc",
     "test:db": "node scripts/test-db.js",
     "hash": "node scripts/hash-password.js"
   },
@@ -22,9 +23,19 @@
     "jsonwebtoken": "^9.0.3",
     "mysql2": "^3.18.2",
     "pg": "^8.11.3",
+    "rate-limit-redis": "^4.3.1",
     "redis": "^5.10.0"
   },
   "devDependencies": {
-    "nodemon": "^3.0.1"
+    "@types/bcrypt": "^6.0.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/node": "^25.5.0",
+    "@types/pg": "^8.20.0",
+    "nodemon": "^3.0.1",
+    "ts-node": "^10.9.2",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^6.0.2"
   }
 }

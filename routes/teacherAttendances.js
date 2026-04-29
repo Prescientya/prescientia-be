@@ -4,6 +4,16 @@ const pool = require('../config/database');
 const { requireTeacher, requireAdmin } = require('../middlewares/auth.middleware');
 const { localDateStr } = require('../utils/dateHelper');
 
+const ALLOWED_TEACHER_SOURCES = ['digital_wifi', 'manual', 'self_report', 'auto_system'];
+
+function normalizeTeacherSource(value, fallback = 'digital_wifi') {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  if (!trimmed) return fallback;
+  return trimmed;
+}
+
 // GET teacher attendances (used by prescientia_guru_fe)
 // GET /api/teacher-attendances?teacher_id=123
 router.get('/', requireAdmin, async (req, res) => {
@@ -141,6 +151,11 @@ router.post('/', requireTeacher, async (req, res) => {
   try {
     const { teacher_id, calendar_id, check_in_time, check_out_time, status, source, wifi_ssid, wifi_bssid, ip_address } = req.body;
 
+    const normalizedSource = normalizeTeacherSource(source, 'digital_wifi');
+    if (!ALLOWED_TEACHER_SOURCES.includes(normalizedSource)) {
+      return res.status(400).json({ success: false, message: 'Source tidak valid' });
+    }
+
     if (!teacher_id || !status) {
       return res.status(400).json({ success: false, message: 'teacher_id dan status harus diisi' });
     }
@@ -150,7 +165,7 @@ router.post('/', requireTeacher, async (req, res) => {
       VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
       RETURNING *
     `;
-    const params = [teacher_id, calendar_id || null, check_in_time || new Date().toISOString(), check_out_time || null, status, source || 'app'];
+    const params = [teacher_id, calendar_id || null, check_in_time || new Date().toISOString(), check_out_time || null, status, normalizedSource];
     const result = await pool.query(query, params);
 
     res.status(201).json({
@@ -170,6 +185,10 @@ router.post('/app/login', requireTeacher, async (req, res) => {
   try {
     const teacherId = req.user.teacher_id;
     const { source, check_in_time } = req.body;
+    const normalizedSource = normalizeTeacherSource(source, 'digital_wifi');
+    if (!ALLOWED_TEACHER_SOURCES.includes(normalizedSource)) {
+      return res.status(400).json({ success: false, message: 'Source tidak valid' });
+    }
     const today = localDateStr(new Date());
 
     // Get today's calendar entry
@@ -206,7 +225,7 @@ router.post('/app/login', requireTeacher, async (req, res) => {
       VALUES ($1, $2, $3, 'hadir', $4, NOW(), NOW())
       RETURNING *
     `;
-    const result = await pool.query(query, [teacherId, calendarId, check_in_time || new Date().toISOString(), source || 'app']);
+    const result = await pool.query(query, [teacherId, calendarId, check_in_time || new Date().toISOString(), normalizedSource]);
 
     res.status(201).json({
       success: true,

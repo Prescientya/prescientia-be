@@ -10,6 +10,30 @@ function classNameSQL(classAlias) {
            ELSE ${classAlias}.class END, ' ', COALESCE(${classAlias}.major, ''))`;
 }
 
+const ATTENDANCE_STATUSES = ['hadir', 'sakit', 'izin', 'alpa', 'terlambat'];
+const APPROVAL_STATUSES = ['pending', 'approved', 'rejected'];
+
+function toPositiveInt(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isNaN(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
+function isValidDateString(dateStr) {
+  if (typeof dateStr !== 'string') return false;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
+  const d = new Date(`${dateStr}T00:00:00`);
+  return !Number.isNaN(d.getTime());
+}
+
+function getDayNameIdFromDate(dateStr) {
+  const d = new Date(`${dateStr}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return null;
+  const daysIndonesian = ['minggu', 'senin', 'selasa', 'rabu', 'kamis', 'jumat', 'sabtu'];
+  return daysIndonesian[d.getDay()];
+}
+
 /**
  * GET /api/teachers/my-classes
  *
@@ -139,12 +163,34 @@ const getClassStudents = async (req, res) => {
       });
     }
 
-    const classId = parseInt(req.params.classId);
-    if (!classId || isNaN(classId)) {
+    const classId = Number.parseInt(req.params.classId, 10);
+    if (!classId || Number.isNaN(classId)) {
       return res.status(400).json({
         success: false,
         message: 'class_id harus berupa angka yang valid'
       });
+    }
+
+    const dateParam = req.query.date || localDateStr(new Date());
+    if (!isValidDateString(dateParam)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Format date tidak valid. Gunakan YYYY-MM-DD'
+      });
+    }
+
+    const scheduleId = toPositiveInt(req.query.schedule_id);
+    const periodId = toPositiveInt(req.query.period_id);
+    const subjectId = toPositiveInt(req.query.subject_id);
+
+    if (req.query.schedule_id !== undefined && !scheduleId) {
+      return res.status(400).json({ success: false, message: 'schedule_id harus berupa angka positif yang valid' });
+    }
+    if (req.query.period_id !== undefined && !periodId) {
+      return res.status(400).json({ success: false, message: 'period_id harus berupa angka positif yang valid' });
+    }
+    if (req.query.subject_id !== undefined && !subjectId) {
+      return res.status(400).json({ success: false, message: 'subject_id harus berupa angka positif yang valid' });
     }
 
     // Verify teacher teaches this class
@@ -174,16 +220,92 @@ const getClassStudents = async (req, res) => {
       });
     }
 
-    // Determine target date
-    const dateParam = req.query.date || null;
-    // MySQL version: sc.date = ?  (no ::date cast)
-    // PostgreSQL version: sc.date = $2::date
-    const dateCondition = dateParam
-      ? `sc.date = $2::date`
-      : `sc.date = CURRENT_DATE`;
-    const dateParams = dateParam ? [classId, dateParam] : [classId];
+    const dayName = getDayNameIdFromDate(dateParam);
+    if (!dayName || dayName === 'minggu' || dayName === 'sabtu') {
+      return res.json({
+        success: true,
+        data: {
+          meta: {
+            class_id: classId,
+            class_name: classInfo.rows[0].class_name.trim(),
+            date: dateParam
+          },
+          period: null,
+          summary_per_period: {
+            total: 0,
+            hadir: 0,
+            sakit: 0,
+            izin: 0,
+            alpa: 0,
+            terlambat: 0,
+            belum_absen: 0
+          },
+          students: []
+        }
+      });
+    }
 
-    // Get all students with their attendance for the target date
+    const periodParams = [teacherId, classId, dayName, dateParam];
+    let periodIdx = 5;
+
+    let periodWhere = `
+      WHERE ts.teacher_id = $1
+        AND ts.class_id = $2
+        AND cp.day = $3
+    `;
+
+    if (scheduleId) {
+      periodWhere += ` AND ts.id = $${periodIdx}`;
+      periodParams.push(scheduleId);
+      periodIdx += 1;
+    }
+    if (periodId) {
+      periodWhere += ` AND ts.class_period_id = $${periodIdx}`;
+      periodParams.push(periodId);
+      periodIdx += 1;
+    }
+    if (subjectId) {
+      periodWhere += ` AND ts.subject_id = $${periodIdx}`;
+      periodParams.push(subjectId);
+      periodIdx += 1;
+    }
+
+    const periodQuery = `
+      SELECT
+        ts.id AS schedule_id,
+        ts.class_period_id AS period_id,
+        ts.subject_id,
+        subj.name AS subject_name,
+        cp.start_time,
+        cp.end_time,
+        EXISTS (
+          SELECT 1
+          FROM submit_teacher_periods stp
+          WHERE stp.teacher_id = ts.teacher_id
+            AND stp.class_id = ts.class_id
+            AND stp.subject_id = ts.subject_id
+            AND stp.period_id = ts.class_period_id
+            AND stp.day = cp.day
+            AND (stp.submitted_at AT TIME ZONE 'Asia/Jakarta')::date = $4::date
+        ) AS is_submitted
+      FROM teacher_schedules ts
+      INNER JOIN class_periods cp ON cp.id = ts.class_period_id
+      LEFT JOIN subjects subj ON subj.id = ts.subject_id
+      ${periodWhere}
+      ORDER BY cp.sequence ASC, ts.id ASC
+      LIMIT 1
+    `;
+
+    const periodResult = await pool.query(periodQuery, periodParams);
+    if (periodResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Jadwal/period yang diminta tidak ditemukan untuk class dan tanggal tersebut'
+      });
+    }
+
+    const period = periodResult.rows[0];
+
     const studentsQuery = `
       SELECT
         s.id AS student_id,
@@ -192,28 +314,45 @@ const getClassStudents = async (req, res) => {
         s.gender,
         s.photo_profile,
         sa.id AS attendance_id,
-        sa.status AS attendance_status,
-        sa.source AS attendance_source,
+        COALESCE(ascp.new_status, sa.status) AS attendance_status,
+        COALESCE(ascp.changed_by_type, sa.source) AS attendance_source,
         sa.check_in_time,
         sa.check_out_time,
         sad.description AS attendance_description,
         sad.approval_status
       FROM students s
-      LEFT JOIN (
-        SELECT sa2.*
+      LEFT JOIN LATERAL (
+        SELECT
+          sa2.id,
+          sa2.status,
+          sa2.source,
+          sa2.check_in_time,
+          sa2.check_out_time
         FROM student_attendances sa2
-        INNER JOIN school_calendar sc ON sc.id = sa2.calendar_id AND ${dateCondition}
-      ) sa ON sa.student_id = s.id
+        INNER JOIN school_calendar sc2 ON sc2.id = sa2.calendar_id
+        WHERE sa2.student_id = s.id
+          AND sa2.class_id = $1
+          AND sc2.date = $2::date
+        ORDER BY sa2.updated_at DESC NULLS LAST, sa2.id DESC
+        LIMIT 1
+      ) sa ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT asc2.new_status, asc2.changed_by_type
+        FROM attendance_status_changes asc2
+        WHERE asc2.attendance_id = sa.id
+          AND asc2.class_period_id = $3
+        ORDER BY asc2.created_at DESC
+        LIMIT 1
+      ) ascp ON TRUE
       LEFT JOIN student_attendance_details sad ON sad.attendance_id = sa.id
       WHERE s.class_id = $1
       ORDER BY s.name ASC
     `;
 
-    const studentsResult = await pool.query(studentsQuery, dateParams);
+    const studentsResult = await pool.query(studentsQuery, [classId, dateParam, period.period_id]);
 
     const cls = classInfo.rows[0];
 
-    // Compute attendance summary
     const students = studentsResult.rows.map(row => ({
       student_id: row.student_id,
       nis: row.nis,
@@ -227,31 +366,38 @@ const getClassStudents = async (req, res) => {
         check_in_time: row.check_in_time,
         check_out_time: row.check_out_time,
         description: row.attendance_description || null,
-        approval_status: row.approval_status || null,
+        approval_status: row.approval_status || null
       } : null
     }));
 
-    // Summary counts
-    const summary = {
+    const summaryPerPeriod = {
       total: students.length,
       hadir: students.filter(s => s.attendance && s.attendance.status === 'hadir').length,
       sakit: students.filter(s => s.attendance && s.attendance.status === 'sakit').length,
       izin: students.filter(s => s.attendance && s.attendance.status === 'izin').length,
       alpa: students.filter(s => s.attendance && s.attendance.status === 'alpa').length,
       terlambat: students.filter(s => s.attendance && s.attendance.status === 'terlambat').length,
-      belum_absen: students.filter(s => !s.attendance).length,
+      belum_absen: students.filter(s => !s.attendance).length
     };
 
     res.json({
       success: true,
-      message: `Ditemukan ${students.length} siswa di kelas ${cls.class_name.trim()}`,
       data: {
-        class_id: classId,
-        class_name: cls.class_name.trim(),
-        grade: cls.grade,
-        major: cls.major,
-        date: dateParam || localDateStr(new Date()),
-        summary,
+        meta: {
+          class_id: classId,
+          class_name: cls.class_name.trim(),
+          date: dateParam
+        },
+        period: {
+          schedule_id: period.schedule_id,
+          period_id: period.period_id,
+          subject_id: period.subject_id,
+          subject_name: period.subject_name,
+          start_time: period.start_time,
+          end_time: period.end_time,
+          is_submitted: period.is_submitted
+        },
+        summary_per_period: summaryPerPeriod,
         students
       }
     });
@@ -479,9 +625,15 @@ const updateHomeroomAttendance = async (req, res) => {
       oldStatus = existingQuery.rows[0].status;
 
       await client.query(
-        `UPDATE student_attendances SET status = $1, source = 'wali_kelas', updated_at = NOW()
+        `UPDATE student_attendances
+         SET status = $1,
+             source = 'wali_kelas',
+             updated_by_role = 'wali_kelas',
+             updated_by_teacher_id = $3,
+             change_reason = $4,
+             updated_at = NOW()
          WHERE id = $2`,
-        [status, attendanceId]
+        [status, attendanceId, teacherId, description || null]
       );
     } else {
       // Create new attendance record
@@ -495,10 +647,11 @@ const updateHomeroomAttendance = async (req, res) => {
       //
       // PostgreSQL version: RETURNING id
       const insertResult = await client.query(
-        `INSERT INTO student_attendances (student_id, class_id, calendar_id, status, source, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, 'wali_kelas', NOW(), NOW())
+        `INSERT INTO student_attendances
+         (student_id, class_id, calendar_id, status, source, updated_by_role, updated_by_teacher_id, change_reason, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'wali_kelas', 'wali_kelas', $5, $6, NOW(), NOW())
          RETURNING id`,
-        [student_id, classId, calendarId, status]
+        [student_id, classId, calendarId, status, teacherId, description || null]
       );
       attendanceId = insertResult.rows[0].id;
     }
@@ -512,14 +665,14 @@ const updateHomeroomAttendance = async (req, res) => {
 
       if (detailCheck.rows.length > 0) {
         await client.query(
-          `UPDATE student_attendance_details SET status = $1, description = $2, approved_by = $3, approval_status = 'confirmed', updated_at = NOW()
+          `UPDATE student_attendance_details SET status = $1, description = $2, approved_by = $3, approval_status = 'approved', updated_at = NOW()
            WHERE attendance_id = $4`,
           [status, description, teacherId, attendanceId]
         );
       } else {
         await client.query(
           `INSERT INTO student_attendance_details (attendance_id, status, description, approved_by, approval_status, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, 'confirmed', NOW(), NOW())`,
+           VALUES ($1, $2, $3, $4, 'approved', NOW(), NOW())`,
           [attendanceId, status, description, teacherId]
         );
       }
@@ -649,6 +802,11 @@ const getPendingAttendances = async (req, res) => {
     const query = `
       SELECT
         sad.id AS detail_id,
+        lc.class_period_id AS period_id,
+        scd.subject_id,
+        scd.schedule_id,
+        cp.start_time,
+        cp.end_time,
         sa.class_id,
         sa.student_id,
         s.nis,
@@ -664,6 +822,23 @@ const getPendingAttendances = async (req, res) => {
       INNER JOIN student_attendances sa ON sa.id = sad.attendance_id
       INNER JOIN students s ON s.id = sa.student_id
       LEFT JOIN school_calendar sc ON sc.id = sa.calendar_id
+      LEFT JOIN LATERAL (
+        SELECT asc2.class_period_id
+        FROM attendance_status_changes asc2
+        WHERE asc2.attendance_id = sa.id
+          AND asc2.class_period_id IS NOT NULL
+        ORDER BY asc2.created_at DESC
+        LIMIT 1
+      ) lc ON TRUE
+      LEFT JOIN class_periods cp ON cp.id = lc.class_period_id
+      LEFT JOIN LATERAL (
+        SELECT ts1.id AS schedule_id, ts1.subject_id
+        FROM teacher_schedules ts1
+        WHERE ts1.class_id = sa.class_id
+          AND ts1.class_period_id = lc.class_period_id
+        ORDER BY ts1.id ASC
+        LIMIT 1
+      ) scd ON TRUE
       WHERE sa.class_id = $1
         AND sad.approval_status = 'pending'
       ORDER BY sad.created_at DESC
@@ -758,9 +933,14 @@ const approveAttendance = async (req, res) => {
     // Update attendance status to the requested status
     await client.query(
       `UPDATE student_attendances
-       SET status = $1, source = 'wali_kelas', updated_at = NOW()
+       SET status = $1,
+           source = 'wali_kelas',
+           updated_by_role = 'wali_kelas',
+           updated_by_teacher_id = $3,
+           change_reason = $4,
+           updated_at = NOW()
        WHERE id = $2`,
-      [detail.requested_status, detail.attendance_id]
+      [detail.requested_status, detail.attendance_id, teacherId, 'Disetujui wali_kelas dari pengajuan pending']
     );
 
     // Log the status change
@@ -930,10 +1110,348 @@ const rejectAttendance = async (req, res) => {
   }
 };
 
+/**
+ * GET /api/teachers/homeroom/period-monitor?class_id=<id>&date=YYYY-MM-DD
+ *
+ * Homeroom teacher monitoring view per period for a specific class and date.
+ */
+const getHomeroomPeriodMonitor = async (req, res) => {
+  try {
+    const teacherId = req.user && Number(req.user.teacher_id);
+    if (!teacherId || Number.isNaN(teacherId)) {
+      return res.status(401).json({ success: false, message: 'Unauthorized: teacher_id tidak ditemukan di token' });
+    }
+
+    const classId = toPositiveInt(req.query.class_id);
+    const dateParam = req.query.date;
+
+    if (!classId) {
+      return res.status(400).json({ success: false, message: 'class_id harus berupa angka positif yang valid' });
+    }
+    if (!dateParam || !isValidDateString(dateParam)) {
+      return res.status(400).json({ success: false, message: 'date wajib diisi dengan format YYYY-MM-DD' });
+    }
+
+    const homeroomCheck = await pool.query(
+      'SELECT id FROM classes WHERE id = $1 AND homeroom_teacher_id = $2 LIMIT 1',
+      [classId, teacherId]
+    );
+
+    if (homeroomCheck.rows.length === 0) {
+      return res.status(403).json({ success: false, message: 'Akses ditolak: Anda bukan wali kelas dari kelas ini' });
+    }
+
+    const dayName = getDayNameIdFromDate(dateParam);
+    if (!dayName || dayName === 'minggu' || dayName === 'sabtu') {
+      return res.json({ success: true, data: [] });
+    }
+
+    const periodsResult = await pool.query(
+      `SELECT
+         ts.id AS schedule_id,
+         ts.class_period_id AS period_id,
+         ts.subject_id,
+         subj.name AS subject_name,
+         cp.start_time,
+         cp.end_time,
+         cp.sequence
+       FROM teacher_schedules ts
+       INNER JOIN class_periods cp ON cp.id = ts.class_period_id
+       LEFT JOIN subjects subj ON subj.id = ts.subject_id
+       WHERE ts.class_id = $1
+         AND cp.day = $2
+       ORDER BY cp.sequence ASC, ts.id ASC`,
+      [classId, dayName]
+    );
+
+    const periodRows = periodsResult.rows;
+    if (periodRows.length === 0) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const summaryQuery = `
+      WITH class_students AS (
+        SELECT s.id AS student_id
+        FROM students s
+        WHERE s.class_id = $1
+      ),
+      attendance_base AS (
+        SELECT
+          cs.student_id,
+          sa.id AS attendance_id,
+          sa.status AS base_status
+        FROM class_students cs
+        LEFT JOIN LATERAL (
+          SELECT sa2.id, sa2.status
+          FROM student_attendances sa2
+          INNER JOIN school_calendar sc2 ON sc2.id = sa2.calendar_id
+          WHERE sa2.student_id = cs.student_id
+            AND sa2.class_id = $1
+            AND sc2.date = $2::date
+          ORDER BY sa2.updated_at DESC NULLS LAST, sa2.id DESC
+          LIMIT 1
+        ) sa ON TRUE
+      ),
+      effective_statuses AS (
+        SELECT
+          ab.student_id,
+          COALESCE(
+            (
+              SELECT asc2.new_status
+              FROM attendance_status_changes asc2
+              WHERE asc2.attendance_id = ab.attendance_id
+                AND asc2.class_period_id = $3
+              ORDER BY asc2.created_at DESC
+              LIMIT 1
+            ),
+            ab.base_status
+          ) AS effective_status
+        FROM attendance_base ab
+      )
+      SELECT
+        COUNT(*)::int AS total,
+        COALESCE(SUM(CASE WHEN effective_status = 'hadir' THEN 1 ELSE 0 END), 0)::int AS hadir,
+        COALESCE(SUM(CASE WHEN effective_status = 'sakit' THEN 1 ELSE 0 END), 0)::int AS sakit,
+        COALESCE(SUM(CASE WHEN effective_status = 'izin' THEN 1 ELSE 0 END), 0)::int AS izin,
+        COALESCE(SUM(CASE WHEN effective_status = 'alpa' THEN 1 ELSE 0 END), 0)::int AS alpa,
+        COALESCE(SUM(CASE WHEN effective_status = 'terlambat' THEN 1 ELSE 0 END), 0)::int AS terlambat,
+        COALESCE(SUM(CASE WHEN effective_status IS NULL THEN 1 ELSE 0 END), 0)::int AS belum_absen
+      FROM effective_statuses
+    `;
+
+    const monitorRows = await Promise.all(periodRows.map(async (period) => {
+      const summaryResult = await pool.query(summaryQuery, [classId, dateParam, period.period_id]);
+      const summary = summaryResult.rows[0];
+
+      return {
+        period: {
+          schedule_id: period.schedule_id,
+          period_id: period.period_id,
+          subject_id: period.subject_id,
+          subject_name: period.subject_name,
+          start_time: period.start_time,
+          end_time: period.end_time
+        },
+        summary: {
+          total: Number(summary.total) || 0,
+          hadir: Number(summary.hadir) || 0,
+          sakit: Number(summary.sakit) || 0,
+          izin: Number(summary.izin) || 0,
+          alpa: Number(summary.alpa) || 0,
+          terlambat: Number(summary.terlambat) || 0,
+          belum_absen: Number(summary.belum_absen) || 0
+        }
+      };
+    }));
+
+    return res.json({ success: true, data: monitorRows });
+  } catch (error) {
+    console.error('getHomeroomPeriodMonitor error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Terjadi kesalahan pada server',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+/**
+ * PATCH /api/teachers/attendance/:attendanceId
+ *
+ * Update attendance with explicit period/schedule context to avoid ambiguous edits.
+ */
+const updateTeacherAttendanceWithPeriodContext = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const teacherId = req.user && Number(req.user.teacher_id);
+    if (!teacherId || Number.isNaN(teacherId)) {
+      return res.status(401).json({ success: false, message: 'Unauthorized: teacher_id tidak ditemukan di token' });
+    }
+
+    const attendanceId = toPositiveInt(req.params.attendanceId);
+    if (!attendanceId) {
+      return res.status(400).json({ success: false, message: 'attendanceId harus berupa angka positif yang valid' });
+    }
+
+    const {
+      schedule_id,
+      period_id,
+      status,
+      description,
+      approval_status,
+      change_reason
+    } = req.body || {};
+
+    const scheduleId = toPositiveInt(schedule_id);
+    const periodId = toPositiveInt(period_id);
+
+    if (!scheduleId || !periodId) {
+      return res.status(400).json({
+        success: false,
+        message: 'schedule_id dan period_id wajib diisi dan harus berupa angka positif'
+      });
+    }
+
+    if (status !== undefined && !ATTENDANCE_STATUSES.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Status tidak valid. Gunakan: ${ATTENDANCE_STATUSES.join(', ')}`
+      });
+    }
+
+    if (approval_status !== undefined && !APPROVAL_STATUSES.includes(approval_status)) {
+      return res.status(400).json({
+        success: false,
+        message: `approval_status tidak valid. Gunakan: ${APPROVAL_STATUSES.join(', ')}`
+      });
+    }
+
+    await client.query('BEGIN');
+
+    const attendanceResult = await client.query(
+      `SELECT id, student_id, class_id, status
+       FROM student_attendances
+       WHERE id = $1
+       LIMIT 1`,
+      [attendanceId]
+    );
+
+    if (attendanceResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, message: 'Attendance tidak ditemukan' });
+    }
+
+    const attendance = attendanceResult.rows[0];
+
+    const scheduleResult = await client.query(
+      `SELECT id, class_id, class_period_id, subject_id
+       FROM teacher_schedules
+       WHERE id = $1
+         AND class_period_id = $2
+         AND teacher_id = $3
+       LIMIT 1`,
+      [scheduleId, periodId, teacherId]
+    );
+
+    if (scheduleResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({
+        success: false,
+        message: 'Akses ditolak: schedule_id/period_id tidak sesuai dengan jadwal mengajar Anda'
+      });
+    }
+
+    const schedule = scheduleResult.rows[0];
+    if (Number(schedule.class_id) !== Number(attendance.class_id)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        success: false,
+        message: 'Context period/schedule tidak sesuai dengan class pada attendance ini'
+      });
+    }
+
+    const oldStatus = attendance.status;
+    const nextStatus = status || oldStatus;
+
+    const updateAttendance = await client.query(
+      `UPDATE student_attendances
+       SET status = $1,
+           source = 'guru_pengajar',
+           updated_by_role = 'guru_pengajar',
+           updated_by_teacher_id = $2,
+           change_reason = $3,
+           updated_at = NOW()
+       WHERE id = $4
+       RETURNING *`,
+      [nextStatus, teacherId, change_reason || description || null, attendanceId]
+    );
+
+    let detailRow = null;
+    if (['sakit', 'izin', 'alpa', 'terlambat'].includes(nextStatus)) {
+      const nextApprovalStatus = approval_status || 'approved';
+      const approvedBy = nextApprovalStatus === 'approved' ? teacherId : null;
+
+      const detailResult = await client.query(
+        `INSERT INTO student_attendance_details
+         (attendance_id, status, description, approval_status, approved_by, approved_at, created_at, updated_at)
+         VALUES (
+           $1,
+           $2,
+           $3,
+           $4,
+           $5,
+           CASE WHEN $4 = 'approved' THEN NOW() ELSE NULL END,
+           NOW(),
+           NOW()
+         )
+         ON CONFLICT (attendance_id)
+         DO UPDATE SET
+           status = EXCLUDED.status,
+           description = EXCLUDED.description,
+           approval_status = EXCLUDED.approval_status,
+           approved_by = EXCLUDED.approved_by,
+           approved_at = EXCLUDED.approved_at,
+           updated_at = NOW()
+         RETURNING *`,
+        [attendanceId, nextStatus, description || null, nextApprovalStatus, approvedBy]
+      );
+      detailRow = detailResult.rows[0];
+    }
+
+    const teacherResult = await client.query('SELECT name FROM teachers WHERE id = $1 LIMIT 1', [teacherId]);
+    const teacherName = teacherResult.rows[0] ? teacherResult.rows[0].name : 'Guru Pengajar';
+
+    await client.query(
+      `INSERT INTO attendance_status_changes
+       (attendance_id, student_id, class_period_id, old_status, new_status,
+        changed_by_type, changed_by_id, changed_by_name, note, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, 'guru_pengajar', $6, $7, $8, NOW(), NOW())`,
+      [
+        attendanceId,
+        attendance.student_id,
+        periodId,
+        oldStatus,
+        nextStatus,
+        teacherId,
+        teacherName,
+        change_reason || description || null
+      ]
+    );
+
+    await client.query('COMMIT');
+
+    return res.json({
+      success: true,
+      message: 'Attendance berhasil diperbarui dengan context period/schedule',
+      data: {
+        attendance: updateAttendance.rows[0],
+        detail: detailRow,
+        period_context: {
+          schedule_id: schedule.id,
+          period_id: schedule.class_period_id,
+          subject_id: schedule.subject_id
+        }
+      }
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('updateTeacherAttendanceWithPeriodContext error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Terjadi kesalahan pada server',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  } finally {
+    client.release();
+  }
+};
+
 module.exports = {
   getTeacherClasses,
   getClassStudents,
   getHomeroomStudents,
+  getHomeroomPeriodMonitor,
+  updateTeacherAttendanceWithPeriodContext,
   updateHomeroomAttendance,
   getHomeroomClasses,
   getPendingAttendances,

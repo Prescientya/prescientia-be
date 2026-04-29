@@ -1,6 +1,6 @@
 const pool = require('../config/database');
 
-const findAlphaWithoutDetailsByStudent = async (studentId) => {
+const findAlpaWithoutDetailsByStudent = async (studentId) => {
   // MySQL version (commented out — uses DATE_FORMAT and DAYNAME):
   /*
   const q = `
@@ -16,6 +16,7 @@ const findAlphaWithoutDetailsByStudent = async (studentId) => {
     LEFT JOIN student_attendance_details sad ON sad.attendance_id = sa.id
     WHERE sa.student_id = ?
       AND sa.status = 'alpa'
+      AND (sc.status IS NULL OR sc.status != 'libur')
     ORDER BY date DESC
   `;
   */
@@ -32,6 +33,7 @@ const findAlphaWithoutDetailsByStudent = async (studentId) => {
     LEFT JOIN student_attendance_details sad ON sad.attendance_id = sa.id
     WHERE sa.student_id = $1
       AND sa.status = 'alpa'
+      AND (sc.status IS NULL OR sc.status != 'libur')
     ORDER BY date DESC
   `;
   const res = await pool.query(q, [studentId]);
@@ -51,13 +53,23 @@ const updateAttendanceStatus = async (client, attendanceId, status) => {
   // return r.rows[0];
 
   // PostgreSQL version: RETURNING *
-  const q = `UPDATE student_attendances SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *`;
+  const q = `
+    UPDATE student_attendances
+    SET status = $1,
+        source = 'manual',
+        updated_by_role = 'system',
+        updated_by_teacher_id = NULL,
+        change_reason = 'Perubahan status dari helper repository',
+        updated_at = NOW()
+    WHERE id = $2
+    RETURNING *
+  `;
   const r = await client.query(q, [status, attendanceId]);
   return r.rows[0];
 };
 
 module.exports = {
-  findAlphaWithoutDetailsByStudent,
+  findAlpaWithoutDetailsByStudent,
   findAttendanceById,
   updateAttendanceStatus
 };
