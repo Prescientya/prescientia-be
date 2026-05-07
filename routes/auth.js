@@ -108,6 +108,8 @@ router.post('/user/guru', authLimiter, async (req, res) => {
  *   200 { success: true, valid: true }              – account exists
  *   401 { success: false, message: '...', account_deleted: true }  – account gone
  *   401 { success: false, message: '...' }          – bad / expired token
+ */
+
 // ==================== PASSWORD CHANGE ENDPOINTS ====================
 
 /**
@@ -130,7 +132,14 @@ router.post('/change-password', async (req, res) => {
     const token = parts[1];
     const { old_password, new_password, new_password_confirm } = req.body;
 
-    // Validate input
+    // Validate input — semua field wajib
+    if (!old_password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password lama (old_password) harus diisi'
+      });
+    }
+
     if (!new_password || !new_password_confirm) {
       return res.status(400).json({
         success: false,
@@ -149,6 +158,13 @@ router.post('/change-password', async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Password harus minimal 8 karakter'
+      });
+    }
+
+    if (old_password === new_password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password baru tidak boleh sama dengan password lama'
       });
     }
 
@@ -175,22 +191,19 @@ router.post('/change-password', async (req, res) => {
       return res.status(403).json({ success: false, message: 'Akun tidak aktif' });
     }
 
-    // If old_password provided, verify it
-    if (old_password) {
-      let hashedPassword = user.password || '';
-      if (hashedPassword.startsWith('$2y$')) {
-        hashedPassword = hashedPassword.replace('$2y$', '$2b$');
-      }
-
-      const isPasswordValid = await bcrypt.compare(old_password, hashedPassword);
-      if (!isPasswordValid) {
-        return res.status(401).json({
-          success: false,
-          message: 'Password lama salah'
-        });
-      }
+    // Verify old_password against stored hash (wajib — tidak ada bypass)
+    let hashedPassword = user.password || '';
+    if (hashedPassword.startsWith('$2y$')) {
+      hashedPassword = hashedPassword.replace('$2y$', '$2b$');
     }
-    // If no old_password, it's a first-time password change (admin/system initiated)
+
+    const isPasswordValid = await bcrypt.compare(old_password, hashedPassword);
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        success: false,
+        message: 'Password lama salah'
+      });
+    }
 
     // Hash new password
     const saltRounds = 10;
@@ -322,7 +335,7 @@ router.post('/admin/reset-password', async (req, res) => {
     });
   }
 });
- */
+
 router.get('/validate-token', async (req, res) => {
   try {
     const authHeader = req.headers['authorization'] || req.headers['Authorization'];

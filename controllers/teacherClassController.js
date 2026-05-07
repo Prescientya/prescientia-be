@@ -52,55 +52,30 @@ const getTeacherClasses = async (req, res) => {
       });
     }
 
-    // Get distinct classes from teacher_schedules
+    // Get distinct classes from teacher_schedules — single pass with conditional aggregation
     const classesQuery = `
-      SELECT DISTINCT
+      SELECT
         ts.class_id,
         ${classNameSQL('c')} AS class_name,
         c.class AS grade,
         c.major,
         c.homeroom_teacher_id,
         ht.name AS homeroom_teacher_name,
-        (SELECT COUNT(*) FROM students s WHERE s.class_id = c.id) AS total_students,
-        (
-          SELECT COUNT(*)
-          FROM students s
-          INNER JOIN student_attendances sa ON sa.student_id = s.id
-          INNER JOIN school_calendar sc ON sc.id = sa.calendar_id AND sc.date = CURRENT_DATE
-          WHERE s.class_id = c.id AND sa.status = 'hadir'
-        ) AS total_hadir,
-        (
-          SELECT COUNT(*)
-          FROM students s
-          INNER JOIN student_attendances sa ON sa.student_id = s.id
-          INNER JOIN school_calendar sc ON sc.id = sa.calendar_id AND sc.date = CURRENT_DATE
-          WHERE s.class_id = c.id AND sa.status = 'sakit'
-        ) AS total_sakit,
-        (
-          SELECT COUNT(*)
-          FROM students s
-          INNER JOIN student_attendances sa ON sa.student_id = s.id
-          INNER JOIN school_calendar sc ON sc.id = sa.calendar_id AND sc.date = CURRENT_DATE
-          WHERE s.class_id = c.id AND sa.status = 'izin'
-        ) AS total_izin,
-        (
-          SELECT COUNT(*)
-          FROM students s
-          INNER JOIN student_attendances sa ON sa.student_id = s.id
-          INNER JOIN school_calendar sc ON sc.id = sa.calendar_id AND sc.date = CURRENT_DATE
-          WHERE s.class_id = c.id AND sa.status = 'alpa'
-        ) AS total_alpa,
-        (
-          SELECT COUNT(*)
-          FROM students s
-          INNER JOIN student_attendances sa ON sa.student_id = s.id
-          INNER JOIN school_calendar sc ON sc.id = sa.calendar_id AND sc.date = CURRENT_DATE
-          WHERE s.class_id = c.id AND sa.status = 'terlambat'
-        ) AS total_terlambat
+        COUNT(DISTINCT s.id) AS total_students,
+        COALESCE(SUM(CASE WHEN sa.status = 'hadir'     THEN 1 ELSE 0 END), 0) AS total_hadir,
+        COALESCE(SUM(CASE WHEN sa.status = 'sakit'     THEN 1 ELSE 0 END), 0) AS total_sakit,
+        COALESCE(SUM(CASE WHEN sa.status = 'izin'      THEN 1 ELSE 0 END), 0) AS total_izin,
+        COALESCE(SUM(CASE WHEN sa.status = 'alpa'      THEN 1 ELSE 0 END), 0) AS total_alpa,
+        COALESCE(SUM(CASE WHEN sa.status = 'terlambat'  THEN 1 ELSE 0 END), 0) AS total_terlambat
       FROM teacher_schedules ts
       INNER JOIN classes c ON c.id = ts.class_id
       LEFT JOIN teachers ht ON ht.id = c.homeroom_teacher_id
+      LEFT JOIN students s ON s.class_id = c.id
+      LEFT JOIN student_attendances sa
+        ON sa.student_id = s.id
+        AND sa.calendar_id IN (SELECT sc.id FROM school_calendar sc WHERE sc.date = CURRENT_DATE)
       WHERE ts.teacher_id = $1
+      GROUP BY ts.class_id, c.class, c.major, c.homeroom_teacher_id, ht.name
       ORDER BY c.class ASC, c.major ASC
     `;
 

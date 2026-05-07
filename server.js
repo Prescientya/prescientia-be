@@ -42,6 +42,7 @@ const { errorHandler, notFound } = require('./middleware/errorHandler');
 const { testConnection } = require('./config/db-helper');
 const pool = require('./config/database');
 const { displayRoutes } = require('./utils/routeAnalyzer2');
+const { readLimiter, attendanceLimiter } = require('./middlewares/rateLimiter');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -106,9 +107,9 @@ const routes = [
   { path: '/api/absence-letters', handler: absenceLettersRoutes }
 ];
 
-// Register all routes dynamically
+// Register all routes dynamically with readLimiter (60 req/min per user)
 routes.forEach(route => {
-  app.use(route.path, route.handler);
+  app.use(route.path, readLimiter, route.handler);
 });
 
 // Health check
@@ -142,7 +143,7 @@ app.get('/api/people', (req, res) => {
 });
 
 // POST /api/wifi-info - receive WiFi scan data from student app
-app.post('/api/wifi-info', async (req, res) => {
+app.post('/api/wifi-info', attendanceLimiter, async (req, res) => {
   try {
     const { ssid, bssid, ip, signalStrength, frequency, isSchoolWifi } = req.body;
     // Log WiFi info for monitoring purposes

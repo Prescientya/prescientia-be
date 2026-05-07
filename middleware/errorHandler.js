@@ -1,8 +1,44 @@
+const fs = require('fs');
+const path = require('path');
+
+const errorLogPath = path.join(__dirname, '..', 'logs', 'error.log');
+
+const shouldLogToFile = () => {
+  const value = (process.env.ERROR_LOG_TO_FILE || '').toLowerCase();
+  return value === 'true' || value === '1' || value === 'yes';
+};
+
+const appendErrorLog = (entry) => {
+  if (!shouldLogToFile()) return;
+
+  try {
+    fs.mkdirSync(path.dirname(errorLogPath), { recursive: true });
+    const line = JSON.stringify(entry);
+    fs.appendFile(errorLogPath, `${line}\n`, (err) => {
+      if (err) {
+        console.error('Failed to write error log:', err.message);
+      }
+    });
+  } catch (logErr) {
+    console.error('Failed to write error log:', logErr.message);
+  }
+};
+
 /**
  * Middleware untuk handle error
  */
 const errorHandler = (err, req, res, next) => {
   console.error(err.stack);
+
+  appendErrorLog({
+    timestamp: new Date().toISOString(),
+    method: req.method,
+    path: req.originalUrl || req.url,
+    status: err.status || 500,
+    message: err.message,
+    code: err.code,
+    stack: err.stack
+  });
 
   // Database error
   if (err.code && err.code.startsWith('23')) {
