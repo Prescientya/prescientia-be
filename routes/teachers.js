@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const bcrypt = require('bcrypt');
@@ -61,7 +61,9 @@ router.post('/homeroom/attendance/:detailId/reject', requireTeacher, teacherClas
 // GET all teachers
 router.get('/', requireAdmin, async (req, res) => {
   try {
-    const { page = 1, limit = 10, department, name } = req.query;
+    const page  = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.max(1, Math.min(100, parseInt(req.query.limit, 10) || 10));
+    const { department, name } = req.query;
     const offset = (page - 1) * limit;
     
     let query = `
@@ -126,7 +128,7 @@ router.get('/', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengambil data teachers',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { ...(process.env.NODE_ENV === 'development' && { error: error.message }) })
     });
   }
 });
@@ -167,7 +169,7 @@ router.get('/:id(\\d+)', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengambil data teacher',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { ...(process.env.NODE_ENV === 'development' && { error: error.message }) })
     });
   }
 });
@@ -263,7 +265,7 @@ router.post('/', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat membuat teacher',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { ...(process.env.NODE_ENV === 'development' && { error: error.message }) })
     });
   } finally {
     client.release();
@@ -383,7 +385,7 @@ router.patch('/:id(\\d+)', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengupdate teacher',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { ...(process.env.NODE_ENV === 'development' && { error: error.message }) })
     });
   }
 });
@@ -431,7 +433,7 @@ router.delete('/:id(\\d+)', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat menghapus teacher',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { ...(process.env.NODE_ENV === 'development' && { error: error.message }) })
     });
   } finally {
     client.release();

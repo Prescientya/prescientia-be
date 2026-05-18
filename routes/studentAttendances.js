@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const { requireStudent, requireAdmin } = require('../middlewares/auth.middleware');
@@ -59,7 +59,7 @@ router.get('/recap/:student_id', requireStudent, async (req, res) => {
     res.json({ success: true, data: rows });
   } catch (error) {
     console.error('Error fetching student attendance recap (list):', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengambil recap kehadiran siswa', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengambil recap kehadiran siswa', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 
@@ -151,7 +151,7 @@ router.get('/', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengambil data student attendances',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -225,7 +225,7 @@ router.get('/app', requireStudent, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengambil data student attendances',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -276,7 +276,7 @@ router.get('/:id', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengambil data student attendance',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -342,7 +342,7 @@ router.post('/', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat membuat student attendance',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -465,7 +465,7 @@ router.post('/app/login', requireStudent, async (req, res) => {
     return res.status(201).json({ success: true, message: 'Student attendance created (login)', data: insertR.rows[0] });
   } catch (error) {
     console.error('Error in app login attendance:', error);
-    return res.status(500).json({ success: false, message: 'Terjadi kesalahan saat membuat attendance (login)', error: error.message });
+    return res.status(500).json({ success: false, message: 'Terjadi kesalahan saat membuat attendance (login)', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 
@@ -527,7 +527,7 @@ router.patch('/app/logout', requireStudent, async (req, res) => {
     return res.json({ success: true, message: 'Student attendance updated (logout)', data: updR.rows[0] });
   } catch (error) {
     console.error('Error in app logout attendance:', error);
-    return res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengupdate attendance (logout)', error: error.message });
+    return res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengupdate attendance (logout)', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 
@@ -579,7 +579,7 @@ router.get('/app/logged', requireAdmin, async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching logged-in students:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengambil daftar siswa yang sedang login', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengambil daftar siswa yang sedang login', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 
@@ -666,7 +666,7 @@ router.patch('/:id', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengupdate student attendance',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -704,7 +704,7 @@ router.delete('/:id', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat menghapus student attendance',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });

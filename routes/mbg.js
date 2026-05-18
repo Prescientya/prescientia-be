@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const bcrypt = require('bcrypt');
@@ -40,7 +40,7 @@ router.get('/petugas', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengambil data petugas MBG',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -75,7 +75,7 @@ router.get('/petugas/:id', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengambil data petugas MBG',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -127,7 +127,7 @@ router.post('/petugas', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat membuat petugas MBG',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -201,7 +201,7 @@ router.patch('/petugas/:id', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengupdate petugas MBG',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -235,7 +235,7 @@ router.delete('/petugas/:id', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat menghapus petugas MBG',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -274,7 +274,7 @@ router.get('/piring', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengambil data piring MBG',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -309,7 +309,7 @@ router.get('/piring/:id', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengambil data piring MBG',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -337,7 +337,7 @@ router.post('/piring', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat membuat piring MBG',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -392,7 +392,7 @@ router.patch('/piring/:id', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengupdate piring MBG',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -421,7 +421,7 @@ router.delete('/piring/:id', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat menghapus piring MBG',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -499,7 +499,7 @@ router.get('/class-daily', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengambil data MBG class daily',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -540,7 +540,7 @@ router.get('/class-daily/:id', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengambil data MBG class daily',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -702,7 +702,7 @@ router.patch('/class-daily/:id', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengupdate MBG class daily',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -731,7 +731,7 @@ router.delete('/class-daily/:id', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat menghapus MBG class daily',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -808,7 +808,7 @@ router.get('/teacher-excess', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengambil data MBG teacher excess',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -848,7 +848,7 @@ router.get('/teacher-excess/:id', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengambil data MBG teacher excess',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -886,7 +886,7 @@ router.post('/teacher-excess', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat membuat MBG teacher excess',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -947,7 +947,7 @@ router.patch('/teacher-excess/:id', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengupdate MBG teacher excess',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -976,7 +976,7 @@ router.delete('/teacher-excess/:id', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat menghapus MBG teacher excess',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });

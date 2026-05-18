@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const { requireAdmin } = require('../middlewares/auth.middleware');
@@ -32,7 +32,7 @@ router.get('/', requireAdmin, async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching classes:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengambil data classes', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengambil data classes', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 
@@ -49,7 +49,7 @@ router.get('/:id', requireAdmin, async (req, res) => {
     res.json({ success: true, data: result.rows[0] });
   } catch (error) {
     console.error('Error fetching class:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 
@@ -84,7 +84,7 @@ router.get('/:classId/students', requireAdmin, async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching class students:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengambil data siswa kelas', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengambil data siswa kelas', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 

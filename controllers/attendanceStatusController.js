@@ -1,4 +1,4 @@
-const pool = require('../config/database');
+﻿const pool = require('../config/database');
 
 // ==================== HELPER FUNCTIONS ====================
 
@@ -339,7 +339,7 @@ async function changeAttendanceStatus(req, res) {
     return res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengubah status kehadiran',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 }
@@ -440,7 +440,7 @@ async function getStatusChangeLogs(req, res) {
     return res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengambil log perubahan status',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 }
@@ -520,7 +520,7 @@ async function getLogsByStudent(req, res) {
     return res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengambil log perubahan status siswa',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 }
@@ -610,7 +610,7 @@ async function getLogsByClass(req, res) {
     return res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengambil log perubahan status kelas',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 }

@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const { requireAdmin } = require('../middlewares/auth.middleware');
@@ -32,7 +32,7 @@ router.get('/', requireAdmin, async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching users:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengambil data users', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengambil data users', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 
@@ -49,7 +49,7 @@ router.get('/:id', requireAdmin, async (req, res) => {
     res.json({ success: true, data: result.rows[0] });
   } catch (error) {
     console.error('Error fetching user:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 
@@ -71,7 +71,7 @@ router.put('/:id', requireAdmin, async (req, res) => {
     res.json({ success: true, message: 'User berhasil diupdate', data: result.rows[0] });
   } catch (error) {
     console.error('Error updating user:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 

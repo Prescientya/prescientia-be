@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const bcrypt = require('bcrypt');
@@ -9,7 +9,9 @@ const { requireStudent, requireAdmin } = require('../middlewares/auth.middleware
 // GET all students
 router.get('/', requireAdmin, async (req, res) => {
   try {
-    const { page = 1, limit = 10, class_id, name } = req.query;
+    const page  = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.max(1, Math.min(100, parseInt(req.query.limit, 10) || 10));
+    const { class_id, name } = req.query;
     const offset = (page - 1) * limit;
     
     let query = `
@@ -76,7 +78,7 @@ router.get('/', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengambil data students',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { ...(process.env.NODE_ENV === 'development' && { error: error.message }) })
     });
   }
 });
@@ -176,7 +178,7 @@ router.get('/profile', requireStudent, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengambil data profil student',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { ...(process.env.NODE_ENV === 'development' && { error: error.message }) })
     });
   }
 });
@@ -216,7 +218,7 @@ router.get('/:id', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengambil data student',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { ...(process.env.NODE_ENV === 'development' && { error: error.message }) })
     });
   }
 });
@@ -328,7 +330,7 @@ router.post('/', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat membuat student',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { ...(process.env.NODE_ENV === 'development' && { error: error.message }) })
     });
   } finally {
     client.release();
@@ -460,7 +462,7 @@ router.patch('/:id', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengupdate student',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { ...(process.env.NODE_ENV === 'development' && { error: error.message }) })
     });
   }
 });
@@ -514,7 +516,7 @@ router.delete('/:id', requireAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat menghapus student',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { ...(process.env.NODE_ENV === 'development' && { error: error.message }) })
     });
   } finally {
     client.release();

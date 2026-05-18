@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const { requireAdmin } = require('../middlewares/auth.middleware');
@@ -6,7 +6,8 @@ const { requireAdmin } = require('../middlewares/auth.middleware');
 // GET all admins
 router.get('/', requireAdmin, async (req, res) => {
   try {
-    const { page = 1, limit = 10 } = req.query;
+    const page  = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.max(1, Math.min(100, parseInt(req.query.limit, 10) || 10));
     const offset = (page - 1) * limit;
 
     const query = `
@@ -34,7 +35,7 @@ router.get('/', requireAdmin, async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching admins:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengambil data admins', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengambil data admins', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 
@@ -58,7 +59,7 @@ router.get('/:id', requireAdmin, async (req, res) => {
     res.json({ success: true, data: result.rows[0] });
   } catch (error) {
     console.error('Error fetching admin:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 

@@ -104,45 +104,41 @@ async function getEvents(req, res) {
 
     const result = await pool.query(query, params);
 
-    // Fetch targets for each event with target_audience = 'kelas'
-    const events = [];
-    for (const row of result.rows) {
-      const event = {
-        id: row.id,
-        title: row.title,
-        description: row.description,
-        link: row.link,
-        release_date: row.release_date,
-        end_date: row.end_date,
-        target_audience: row.target_audience,
-        created_at: row.created_at,
-        updated_at: row.updated_at,
-        status: _getEventStatus(row.release_date, row.end_date, today),
-        targets: [],
-      };
+    // Pre-fetch semua targets sekaligus untuk menghindari N+1 query
+    const kelasEventIds = result.rows
+      .filter(r => r.target_audience === 'kelas')
+      .map(r => r.id);
 
-      if (row.target_audience === 'kelas') {
-        const targetsResult = await pool.query(
-          // MySQL version (commented out — CONCAT() and no type casts):
-          // `SELECT et.id, et.class_id, et.grade, et.major,
-          //         CONCAT(CASE c.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
-          //                ELSE c.class END, ' ', COALESCE(c.major, '')) AS class_name
-          //  FROM event_targets et LEFT JOIN classes c ON c.id = et.class_id WHERE et.event_id = ?`
-          //
-          // MySQL version: CONCAT()
-          `SELECT et.id, et.class_id, et.grade, et.major,
-                  CONCAT(CASE c.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
-                         ELSE c.class END, ' ', COALESCE(c.major, '')) AS class_name
-           FROM event_targets et
-           LEFT JOIN classes c ON c.id = et.class_id
-           WHERE et.event_id = $1`,
-          [row.id]
-        );
-        event.targets = targetsResult.rows;
+    const targetsMap = {};
+    if (kelasEventIds.length > 0) {
+      const targetsResult = await pool.query(
+        `SELECT et.id, et.event_id, et.class_id, et.grade, et.major,
+                CONCAT(CASE c.class WHEN 10 THEN 'X' WHEN 11 THEN 'XI' WHEN 12 THEN 'XII'
+                       ELSE c.class END, ' ', COALESCE(c.major, '')) AS class_name
+         FROM event_targets et
+         LEFT JOIN classes c ON c.id = et.class_id
+         WHERE et.event_id = ANY($1)`,
+        [kelasEventIds]
+      );
+      for (const t of targetsResult.rows) {
+        if (!targetsMap[t.event_id]) targetsMap[t.event_id] = [];
+        targetsMap[t.event_id].push(t);
       }
-
-      events.push(event);
     }
+
+    const events = result.rows.map(row => ({
+      id: row.id,
+      title: row.title,
+      description: row.description,
+      link: row.link,
+      release_date: row.release_date,
+      end_date: row.end_date,
+      target_audience: row.target_audience,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      status: _getEventStatus(row.release_date, row.end_date, today),
+      targets: targetsMap[row.id] || [],
+    }));
 
     return res.status(200).json({
       success: true,

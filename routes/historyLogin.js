@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const { requireStudent, requireAdmin } = require('../middlewares/auth.middleware');
@@ -28,7 +28,7 @@ router.post('/', requireStudent, async (req, res) => {
     });
   } catch (error) {
     console.error('Error creating history login:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat menyimpan history login', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat menyimpan history login', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 
@@ -76,7 +76,7 @@ router.get('/', requireAdmin, readLimiter, async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching history logins:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengambil data history login', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengambil data history login', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 

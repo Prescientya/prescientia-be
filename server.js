@@ -43,6 +43,7 @@ const { testConnection } = require('./config/db-helper');
 const pool = require('./config/database');
 const { displayRoutes } = require('./utils/routeAnalyzer2');
 const { readLimiter, attendanceLimiter } = require('./middlewares/rateLimiter');
+const { requireAuth } = require('./middleware/auth.middleware');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -137,25 +138,28 @@ const healthHandler = async (req, res) => {
 app.get('/health', healthHandler);
 app.get('/api/health', healthHandler);
 
-// Legacy /api/people (demo data - no database table)
-app.get('/api/people', (req, res) => {
-  res.json({ success: true, data: [] });
-});
-
 // POST /api/wifi-info - receive WiFi scan data from student app
-app.post('/api/wifi-info', attendanceLimiter, async (req, res) => {
+// requireAuth: hanya user yang sudah login (siswa/guru) yang bisa kirim data WiFi
+app.post('/api/wifi-info', requireAuth, attendanceLimiter, async (req, res) => {
   try {
     const { ssid, bssid, ip, signalStrength, frequency, isSchoolWifi } = req.body;
-    // Log WiFi info for monitoring purposes
-    console.log('[WiFi Info]', { ssid, bssid, ip, isSchoolWifi });
-    // If there's a wifi_presence_logs table, try to insert
-    if (ssid && bssid) {
+    const userId = req.user.user_id;
+    console.log('[WiFi Info]', { userId, ssid, bssid, ip, isSchoolWifi });
+    // Cari wifi_network berdasarkan BSSID atau SSID untuk mendapatkan wifi_id
+    if (ssid || bssid) {
       try {
-        await pool.query(
-          `INSERT INTO wifi_presence_logs (ssid, bssid, ip_address, signal_strength, connected_at)
-           VALUES ($1, $2, $3, $4, NOW())`,
-          [ssid, bssid, ip || null, signalStrength || null]
+        const wifiResult = await pool.query(
+          `SELECT id FROM wifi_networks WHERE bssid = $1 OR ssid = $2 LIMIT 1`,
+          [bssid || null, ssid || null]
         );
+        if (wifiResult.rows.length > 0) {
+          const wifiId = wifiResult.rows[0].id;
+          await pool.query(
+            `INSERT INTO wifi_presence_logs (user_id, wifi_id, detected_at, detected_by)
+             VALUES ($1, $2, NOW(), $3)`,
+            [userId, wifiId, bssid ? 'BSSID' : 'SSID']
+          );
+        }
       } catch (dbErr) {
         console.warn('[WiFi Info] Could not log to DB:', dbErr.message);
       }

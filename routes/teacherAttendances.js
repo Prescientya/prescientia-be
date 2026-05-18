@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const { requireTeacher, requireAdmin } = require('../middlewares/auth.middleware');
@@ -58,7 +58,7 @@ router.get('/', requireAdmin, async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching teacher attendances:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 
@@ -87,7 +87,7 @@ router.get('/my', requireTeacher, async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching my attendance:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 
@@ -142,7 +142,7 @@ router.get('/recap/:teacherId', requireTeacher, async (req, res) => {
     res.json({ success: true, data: rows });
   } catch (error) {
     console.error('Error fetching teacher attendance recap:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 
@@ -175,7 +175,7 @@ router.post('/', requireTeacher, async (req, res) => {
     });
   } catch (error) {
     console.error('Error creating teacher attendance:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 
@@ -234,7 +234,7 @@ router.post('/app/login', requireTeacher, async (req, res) => {
     });
   } catch (error) {
     console.error('Error teacher check-in:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat check-in', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat check-in', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 
@@ -278,7 +278,7 @@ router.patch('/app/logout', requireTeacher, async (req, res) => {
     });
   } catch (error) {
     console.error('Error teacher check-out:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat check-out', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat check-out', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 

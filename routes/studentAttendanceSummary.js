@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const { requireStudent, requireAuth } = require('../middlewares/auth.middleware');
@@ -125,7 +125,7 @@ router.get('/:studentId/monthly', requireAuth, readLimiter, async (req, res) => 
     return res.json({ success: true, data });
   } catch (error) {
     console.error('Error fetching student attendance summary (monthly):', error);
-    return res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengambil summary kehadiran siswa', error: error.message });
+    return res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengambil summary kehadiran siswa', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 
@@ -147,7 +147,7 @@ router.get('/:studentId', requireAuth, readLimiter, async (req, res) => {
     return res.json({ success: true, data });
   } catch (error) {
     console.error('Error fetching student attendance summary:', error);
-    return res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengambil summary kehadiran siswa', error: error.message });
+    return res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengambil summary kehadiran siswa', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 

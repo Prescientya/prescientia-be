@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const { requireStudent } = require('../middlewares/auth.middleware');
@@ -175,7 +175,7 @@ router.get('/attendance/today', requireStudent, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengambil data kehadiran',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -221,15 +221,22 @@ router.post('/attendance/batch-submit', requireStudent, async (req, res) => {
         message: 'attendances array tidak boleh kosong'
       });
     }
-    
+
+    if (attendances.length > 100) {
+      return res.status(400).json({
+        success: false,
+        message: 'Maksimal 100 record per batch'
+      });
+    }
+
     // Get calendar_id untuk tanggal tersebut
     const calendarQuery = await client.query(
       'SELECT id FROM school_calendar WHERE DATE(date) = DATE($1)',
       [date]
     );
-    
+
     const calendar_id = calendarQuery.rows.length > 0 ? calendarQuery.rows[0].id : null;
-    
+
     await client.query('BEGIN');
     
     let successCount = 0;
@@ -347,7 +354,7 @@ router.post('/attendance/batch-submit', requireStudent, async (req, res) => {
         details.push({
           student_id: attendance.student_id,
           success: false,
-          error: error.message
+          ...(process.env.NODE_ENV === 'development' && { error: error.message })
         });
         failedCount++;
       }
@@ -382,7 +389,7 @@ router.post('/attendance/batch-submit', requireStudent, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat submit attendance',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   } finally {
     client.release();
@@ -430,7 +437,14 @@ router.patch('/attendance/batch-update', requireStudent, async (req, res) => {
         message: 'attendances array tidak boleh kosong'
       });
     }
-    
+
+    if (attendances.length > 100) {
+      return res.status(400).json({
+        success: false,
+        message: 'Maksimal 100 record per batch'
+      });
+    }
+
     await client.query('BEGIN');
     
     let successCount = 0;
@@ -556,7 +570,7 @@ router.patch('/attendance/batch-update', requireStudent, async (req, res) => {
           attendance_id: attendance.attendance_id,
           student_id: attendance.student_id,
           success: false,
-          error: error.message
+          ...(process.env.NODE_ENV === 'development' && { error: error.message })
         });
         failedCount++;
       }
@@ -590,7 +604,7 @@ router.patch('/attendance/batch-update', requireStudent, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat update attendance',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   } finally {
     client.release();

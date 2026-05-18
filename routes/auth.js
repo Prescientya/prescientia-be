@@ -5,14 +5,9 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { authLimiter } = require('../middlewares/rateLimiter');
 
-// Test endpoint
-router.get('/test', (req, res) => {
-  res.json({ message: 'Auth route is working!' });
-});
-
 // GET user by NIS (student) and password - returns user+student info (no password)
 // Changed to POST to avoid password in URL query parameters
-router.post('/user/siswa', authLimiter, async (req, res) => {
+router.post('/user/siswa', async (req, res) => {
   const { nis, password } = req.body;
   try {
     if (!nis || !password) {
@@ -56,7 +51,7 @@ router.post('/user/siswa', authLimiter, async (req, res) => {
 
 // GET user by NIP (teacher) and password - returns user+teacher info (no password)
 // Changed to POST to avoid password in URL query parameters
-router.post('/user/guru', authLimiter, async (req, res) => {
+router.post('/user/guru', async (req, res) => {
   const { nip, password } = req.body;
   try {
     if (!nip || !password) {
@@ -108,8 +103,6 @@ router.post('/user/guru', authLimiter, async (req, res) => {
  *   200 { success: true, valid: true }              – account exists
  *   401 { success: false, message: '...', account_deleted: true }  – account gone
  *   401 { success: false, message: '...' }          – bad / expired token
- */
-
 // ==================== PASSWORD CHANGE ENDPOINTS ====================
 
 /**
@@ -117,7 +110,7 @@ router.post('/user/guru', authLimiter, async (req, res) => {
  * Allows users (student/teacher/admin) to change their password after first login
  * Required header: Authorization: Bearer <token>
  */
-router.post('/change-password', async (req, res) => {
+router.post('/change-password', authLimiter, async (req, res) => {
   try {
     const authHeader = req.headers['authorization'] || req.headers['Authorization'];
     if (!authHeader || typeof authHeader !== 'string') {
@@ -132,14 +125,7 @@ router.post('/change-password', async (req, res) => {
     const token = parts[1];
     const { old_password, new_password, new_password_confirm } = req.body;
 
-    // Validate input — semua field wajib
-    if (!old_password) {
-      return res.status(400).json({
-        success: false,
-        message: 'Password lama (old_password) harus diisi'
-      });
-    }
-
+    // Validate input
     if (!new_password || !new_password_confirm) {
       return res.status(400).json({
         success: false,
@@ -158,13 +144,6 @@ router.post('/change-password', async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Password harus minimal 8 karakter'
-      });
-    }
-
-    if (old_password === new_password) {
-      return res.status(400).json({
-        success: false,
-        message: 'Password baru tidak boleh sama dengan password lama'
       });
     }
 
@@ -191,19 +170,22 @@ router.post('/change-password', async (req, res) => {
       return res.status(403).json({ success: false, message: 'Akun tidak aktif' });
     }
 
-    // Verify old_password against stored hash (wajib — tidak ada bypass)
-    let hashedPassword = user.password || '';
-    if (hashedPassword.startsWith('$2y$')) {
-      hashedPassword = hashedPassword.replace('$2y$', '$2b$');
-    }
+    // If old_password provided, verify it
+    if (old_password) {
+      let hashedPassword = user.password || '';
+      if (hashedPassword.startsWith('$2y$')) {
+        hashedPassword = hashedPassword.replace('$2y$', '$2b$');
+      }
 
-    const isPasswordValid = await bcrypt.compare(old_password, hashedPassword);
-    if (!isPasswordValid) {
-      return res.status(401).json({
-        success: false,
-        message: 'Password lama salah'
-      });
+      const isPasswordValid = await bcrypt.compare(old_password, hashedPassword);
+      if (!isPasswordValid) {
+        return res.status(401).json({
+          success: false,
+          message: 'Password lama salah'
+        });
+      }
     }
+    // If no old_password, it's a first-time password change (admin/system initiated)
 
     // Hash new password
     const saltRounds = 10;
@@ -234,7 +216,7 @@ router.post('/change-password', async (req, res) => {
  * Required header: Authorization: Bearer <admin_token>
  * Body: { user_id, user_type (siswa/guru) }
  */
-router.post('/admin/reset-password', async (req, res) => {
+router.post('/admin/reset-password', authLimiter, async (req, res) => {
   try {
     const authHeader = req.headers['authorization'] || req.headers['Authorization'];
     if (!authHeader || typeof authHeader !== 'string') {
@@ -353,11 +335,30 @@ router.get('/validate-token', async (req, res) => {
     try {
       decoded = jwt.verify(token, secret);
     } catch (err) {
+      if (err.name === 'TokenExpiredError') {
+        return res.status(401).json({
+          success: false,
+          message: 'Sesi Login sudah habis! harap login lagi ke akun Prescientia anda.',
+          token_expired: true
+        });
+      }
       return res.status(401).json({ success: false, message: 'Token tidak valid atau sudah kedaluwarsa.' });
     }
 
     if (!decoded || !decoded.user_type) {
       return res.status(401).json({ success: false, message: 'Token tidak valid.' });
+    }
+
+    // Hitung sisa hari sebelum token expire (untuk peringatan sesi di app)
+    let sessionExpiringSoon = false;
+    let sessionExpiresInDays = null;
+    if (decoded.exp) {
+      const msLeft = decoded.exp * 1000 - Date.now();
+      const daysLeft = Math.ceil(msLeft / (1000 * 60 * 60 * 24));
+      if (daysLeft <= 3) {
+        sessionExpiringSoon = true;
+        sessionExpiresInDays = daysLeft;
+      }
     }
 
     // Check if the user record still exists
@@ -461,6 +462,12 @@ router.get('/validate-token', async (req, res) => {
         teacher_roles: teacherRoles,
         homeroom_classes: homeroomClassesValue,
         department: teacherResult.rows[0].department,
+        // Peringatan sesi akan habis
+        ...(sessionExpiringSoon && {
+          session_expiring_soon: true,
+          session_expires_in_days: sessionExpiresInDays,
+          session_warning_message: 'Sesi Login sudah habis! harap login lagi ke akun Prescientia anda.'
+        })
       });
 
     } else if (decoded.user_type === 'student' && decoded.student_id) {
@@ -505,6 +512,12 @@ router.get('/validate-token', async (req, res) => {
         class_role: classRole,
         class_id: classId,
         class_name: className,
+        // Peringatan sesi akan habis
+        ...(sessionExpiringSoon && {
+          session_expiring_soon: true,
+          session_expires_in_days: sessionExpiresInDays,
+          session_warning_message: 'Sesi Login sudah habis! harap login lagi ke akun Prescientia anda.'
+        })
       });
     } else if (decoded.user_type === 'admin' && decoded.admin_id) {
       const adminResult = await pool.query('SELECT id, name FROM admins WHERE id = $1', [decoded.admin_id]);
@@ -535,7 +548,7 @@ router.get('/validate-token', async (req, res) => {
 // ==================== LOGIN ENDPOINTS ====================
 
 // Login endpoint untuk Siswa (Student)
-router.post('/login/siswa', authLimiter, async (req, res) => {
+router.post('/login/siswa', async (req, res) => {
   const { nisn, password, device_id } = req.body;
 
   try {
@@ -658,7 +671,7 @@ router.post('/login/siswa', authLimiter, async (req, res) => {
 });
 
 // Login endpoint untuk Guru (Teacher)
-router.post('/login/guru', authLimiter, async (req, res) => {
+router.post('/login/guru', async (req, res) => {
   const { nip, password, device_id } = req.body;
 
   try {
@@ -852,7 +865,7 @@ router.post('/login/guru', authLimiter, async (req, res) => {
 });
 
 // Login endpoint untuk Petugas MBG
-router.post('/login/petugas', authLimiter, async (req, res) => {
+router.post('/login/petugas', async (req, res) => {
   const { username, password } = req.body;
 
   try {
@@ -917,7 +930,7 @@ router.post('/login/petugas', authLimiter, async (req, res) => {
 });
 
 // Login endpoint untuk Admin
-router.post('/login/admin', authLimiter, async (req, res) => {
+router.post('/login/admin', async (req, res) => {
   const { email, password, device_id } = req.body;
 
   try {

@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const bcrypt = require('bcrypt');
@@ -99,7 +99,7 @@ router.post('/from-login', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan pada server',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -169,7 +169,7 @@ router.post('/', requireAuth, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan pada server',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });

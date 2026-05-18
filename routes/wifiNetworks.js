@@ -1,11 +1,12 @@
-const express = require('express');
+﻿const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
-const { requireAuth, requireAdmin } = require('../middlewares/auth.middleware');
+const { requireAuth, requireAdmin, requireStudentOrTeacher } = require('../middlewares/auth.middleware');
 
 // GET all wifi networks (used by prescientia_fe and prescientia_guru_fe)
+// Hanya siswa dan guru yang boleh mengakses daftar WiFi (bukan admin umum)
 // GET /api/wifi-networks?limit=1000
-router.get('/', async (req, res) => {
+router.get('/', requireStudentOrTeacher, async (req, res) => {
   try {
     const { limit = 1000 } = req.query;
 
@@ -24,7 +25,7 @@ router.get('/', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching wifi networks:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengambil data wifi networks', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat mengambil data wifi networks', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 
@@ -41,7 +42,7 @@ router.get('/:id', requireAuth, async (req, res) => {
     res.json({ success: true, data: result.rows[0] });
   } catch (error) {
     console.error('Error fetching wifi network:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 
@@ -63,7 +64,7 @@ router.post('/', requireAdmin, async (req, res) => {
     res.status(201).json({ success: true, message: 'Wifi network berhasil ditambahkan', data: result.rows[0] });
   } catch (error) {
     console.error('Error creating wifi network:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 
@@ -87,7 +88,7 @@ router.put('/:id', requireAdmin, async (req, res) => {
     res.json({ success: true, message: 'Wifi network berhasil diupdate', data: result.rows[0] });
   } catch (error) {
     console.error('Error updating wifi network:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 
@@ -104,7 +105,7 @@ router.delete('/:id', requireAdmin, async (req, res) => {
     res.json({ success: true, message: 'Wifi network berhasil dihapus' });
   } catch (error) {
     console.error('Error deleting wifi network:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 

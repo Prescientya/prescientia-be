@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const { localDateStr } = require('../utils/dateHelper');
@@ -45,7 +45,7 @@ router.get('/', requireAdmin, async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching teacher class roles:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 
@@ -110,7 +110,7 @@ router.get('/classes-with-attendance/:teacherId', requireTeacher, async (req, re
     });
   } catch (error) {
     console.error('Error fetching teacher classes with attendance:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 
@@ -131,7 +131,7 @@ router.post('/', requireAdmin, async (req, res) => {
     res.status(201).json({ success: true, message: 'Teacher class role berhasil dibuat', data: result.rows[0] });
   } catch (error) {
     console.error('Error creating teacher class role:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 
@@ -148,7 +148,7 @@ router.delete('/:id', requireAdmin, async (req, res) => {
     res.json({ success: true, message: 'Teacher class role berhasil dihapus' });
   } catch (error) {
     console.error('Error deleting teacher class role:', error);
-    res.status(500).json({ success: false, message: 'Terjadi kesalahan', error: error.message });
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
   }
 });
 

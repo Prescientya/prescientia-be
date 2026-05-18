@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const { requireAuth, requireStudent } = require('../middlewares/auth.middleware');
@@ -199,7 +199,7 @@ router.post('/scan', requireStudent, attendanceLimiter, async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat memvalidasi kehadiran',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -246,7 +246,7 @@ router.get('/check/:user_id', requireAuth, readLimiter, async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan saat mengecek kehadiran',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -302,7 +302,7 @@ router.get('/last-period-today', requireAuth, readLimiter, async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan',
-      error: error.message
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
