@@ -1,6 +1,24 @@
 const jwt = require('jsonwebtoken');
+const { isTokenRevoked } = require('../utils/tokenBlacklist');
 
 const JWT_SECRET = process.env.JWT_SECRET;
+
+// Cek apakah token sudah di-revoke via Redis blacklist.
+// Token lama (issued sebelum patch ini) tidak punya `jti` → diperlakukan valid
+// untuk backward compatibility. Mengembalikan boolean (true bila valid/lanjut).
+async function ensureNotRevoked(decoded, res) {
+  if (!decoded || !decoded.jti) return true; // token lama: lewati cek
+  const revoked = await isTokenRevoked(decoded.jti);
+  if (revoked) {
+    res.status(401).json({
+      success: false,
+      message: 'Token telah di-revoke. Silakan login kembali.',
+      token_revoked: true
+    });
+    return false;
+  }
+  return true;
+}
 
 // Helper: extract Bearer token from Authorization header
 function extractBearerToken(req) {
@@ -36,7 +54,7 @@ function requireStudent(req, res, next) {
       return res.status(401).json({ success: false, message: 'Token tidak ditemukan. Silakan login.' });
     }
 
-    jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    jwt.verify(token, JWT_SECRET, async (err, decoded) => {
       if (err) {
         if (err.name === 'TokenExpiredError') {
           return res.status(401).json({
@@ -55,12 +73,17 @@ function requireStudent(req, res, next) {
         return res.status(401).json({ success: false, message: 'Token tidak valid atau tidak mengandung student_id.' });
       }
 
+      if (!(await ensureNotRevoked(decoded, res))) return;
+
       // Attach a minimal, explicit `req.user` shape for downstream authorization.
       // Important: use `student_id` for ownership checks of attendance/notifications.
+      // Note: token mungkin membawa role di `class_role` (jalur login) atau `student_role` (legacy).
       req.user = {
         user_id: decoded.user_id,
+        user_type: decoded.user_type,
         student_id: decoded.student_id,
-        role: decoded.student_role || null,
+        role: decoded.class_role || decoded.student_role || null,
+        student_role: decoded.class_role || decoded.student_role || null,
         class_id: decoded.class_id || null
       };
 
@@ -90,7 +113,10 @@ function requireKM(req, res, next) {
       return res.status(401).json({ success: false, message: 'Unauthorized: middleware requireStudent harus dijalankan terlebih dahulu.' });
     }
 
-    if (req.user.student_role !== 'KM') {
+    // Fix: sebelumnya cek `student_role` saja, padahal requireStudent menyetel
+    // role pada `req.user.role`. Sekarang cek keduanya (case-insensitive).
+    const studentRole = (req.user.role || req.user.student_role || '').toString().toUpperCase();
+    if (studentRole !== 'KM') {
       return res.status(403).json({ success: false, message: 'Akses terlarang: dibutuhkan peran KM.' });
     }
 
@@ -114,7 +140,7 @@ function requireTeacher(req, res, next) {
       return res.status(401).json({ success: false, message: 'Token tidak ditemukan. Silakan login.' });
     }
 
-    jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    jwt.verify(token, JWT_SECRET, async (err, decoded) => {
       if (err) {
         if (err.name === 'TokenExpiredError') {
           return res.status(401).json({
@@ -130,6 +156,8 @@ function requireTeacher(req, res, next) {
       if (!decoded || decoded.user_type !== 'teacher' || !decoded.teacher_id) {
         return res.status(401).json({ success: false, message: 'Token tidak valid atau tidak mengandung teacher_id.' });
       }
+
+      if (!(await ensureNotRevoked(decoded, res))) return;
 
       // Attach a minimal, explicit `req.user` shape for downstream authorization.
       // teacher_roles is an array of {role, class_id, class_name} objects.
@@ -171,7 +199,7 @@ function requireAdmin(req, res, next) {
       return res.status(401).json({ success: false, message: 'Token tidak ditemukan. Silakan login.' });
     }
 
-    jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    jwt.verify(token, JWT_SECRET, async (err, decoded) => {
       if (err) {
         if (err.name === 'TokenExpiredError') {
           return res.status(401).json({ success: false, message: 'Token kadaluwarsa. Silakan login kembali.' });
@@ -182,6 +210,8 @@ function requireAdmin(req, res, next) {
       if (!decoded || decoded.user_type !== 'admin' || !decoded.admin_id) {
         return res.status(403).json({ success: false, message: 'Akses terlarang. Hanya admin yang dapat mengakses endpoint ini.' });
       }
+
+      if (!(await ensureNotRevoked(decoded, res))) return;
 
       req.user = {
         user_id: decoded.user_id,
@@ -206,7 +236,7 @@ function requireStudentOrTeacher(req, res, next) {
       return res.status(401).json({ success: false, message: 'Token tidak ditemukan. Silakan login.' });
     }
 
-    jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    jwt.verify(token, JWT_SECRET, async (err, decoded) => {
       if (err) {
         if (err.name === 'TokenExpiredError') {
           return res.status(401).json({
@@ -225,6 +255,8 @@ function requireStudentOrTeacher(req, res, next) {
       if (!['student', 'teacher'].includes(decoded.user_type)) {
         return res.status(403).json({ success: false, message: 'Akses terlarang. Endpoint ini hanya untuk siswa dan guru.' });
       }
+
+      if (!(await ensureNotRevoked(decoded, res))) return;
 
       req.user = {
         user_id: decoded.user_id,
@@ -260,7 +292,7 @@ function requireAuth(req, res, next) {
       return res.status(401).json({ success: false, message: 'Token tidak ditemukan. Silakan login.' });
     }
 
-    jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    jwt.verify(token, JWT_SECRET, async (err, decoded) => {
       if (err) {
         if (err.name === 'TokenExpiredError') {
           return res.status(401).json({
@@ -275,6 +307,8 @@ function requireAuth(req, res, next) {
       if (!decoded || !decoded.user_type) {
         return res.status(401).json({ success: false, message: 'Token tidak valid.' });
       }
+
+      if (!(await ensureNotRevoked(decoded, res))) return;
 
       req.user = {
         user_id: decoded.user_id,

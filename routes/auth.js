@@ -1,13 +1,25 @@
 const express = require('express');
 const router = express.Router();
+const crypto = require('crypto');
 const pool = require('../config/database');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { authLimiter } = require('../middlewares/rateLimiter');
+const { revokeToken } = require('../utils/tokenBlacklist');
+
+// Pesan login seragam (mitigasi username enumeration). SEMUA kegagalan
+// kredensial (user tidak ada / password salah / akun nonaktif / role salah)
+// memakai pesan ini + status 401 agar attacker tidak bisa membedakan kondisi.
+const LOGIN_INVALID = {
+  siswa: 'NIS atau Password Salah!',
+  guru: 'NIP atau Password Salah!',
+  admin: 'Email atau Password Salah!',
+  petugas: 'Username atau Password Salah!',
+};
 
 // GET user by NIS (student) and password - returns user+student info (no password)
 // Changed to POST to avoid password in URL query parameters
-router.post('/user/siswa', async (req, res) => {
+router.post('/user/siswa', authLimiter, async (req, res) => {
   const { nis, password } = req.body;
   try {
     if (!nis || !password) {
@@ -26,7 +38,7 @@ router.post('/user/siswa', async (req, res) => {
 
     const result = await pool.query(q, [nis]);
     if (result.rows.length === 0) {
-      return res.status(404).json({ success: false, message: 'User siswa tidak ditemukan' });
+      return res.status(401).json({ success: false, message: LOGIN_INVALID.siswa });
     }
 
     const row = result.rows[0];
@@ -36,7 +48,7 @@ router.post('/user/siswa', async (req, res) => {
 
     const ok = await bcrypt.compare(password, hashed);
     if (!ok) {
-      return res.status(401).json({ success: false, message: 'nis atau password salah' });
+      return res.status(401).json({ success: false, message: LOGIN_INVALID.siswa });
     }
 
     // remove password before sending
@@ -51,7 +63,7 @@ router.post('/user/siswa', async (req, res) => {
 
 // GET user by NIP (teacher) and password - returns user+teacher info (no password)
 // Changed to POST to avoid password in URL query parameters
-router.post('/user/guru', async (req, res) => {
+router.post('/user/guru', authLimiter, async (req, res) => {
   const { nip, password } = req.body;
   try {
     if (!nip || !password) {
@@ -70,7 +82,7 @@ router.post('/user/guru', async (req, res) => {
 
     const result = await pool.query(q, [nip]);
     if (result.rows.length === 0) {
-      return res.status(404).json({ success: false, message: 'User guru tidak ditemukan' });
+      return res.status(401).json({ success: false, message: LOGIN_INVALID.guru });
     }
 
     const row = result.rows[0];
@@ -80,7 +92,7 @@ router.post('/user/guru', async (req, res) => {
 
     const ok = await bcrypt.compare(password, hashed);
     if (!ok) {
-      return res.status(401).json({ success: false, message: 'nip atau password salah' });
+      return res.status(401).json({ success: false, message: LOGIN_INVALID.guru });
     }
 
     delete row.password;
@@ -159,8 +171,8 @@ router.post('/change-password', authLimiter, async (req, res) => {
       return res.status(401).json({ success: false, message: 'Token tidak valid.' });
     }
 
-    // Get user record
-    const userResult = await pool.query('SELECT id, password, is_active FROM users WHERE id = $1', [decoded.user_id]);
+    // Get user record (sertakan first_login untuk validasi keamanan)
+    const userResult = await pool.query('SELECT id, password, is_active, first_login FROM users WHERE id = $1', [decoded.user_id]);
     if (userResult.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'User tidak ditemukan' });
     }
@@ -170,13 +182,20 @@ router.post('/change-password', authLimiter, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Akun tidak aktif' });
     }
 
-    // If old_password provided, verify it
-    if (old_password) {
+    // SECURITY: old_password WAJIB kecuali kondisi first_login (admin baru reset).
+    // Sebelumnya, jika old_password tidak dikirim, password berubah tanpa verifikasi.
+    // Itu memungkinkan pencurian akun bila token bocor — dipertegas di sini.
+    if (!user.first_login) {
+      if (!old_password) {
+        return res.status(400).json({
+          success: false,
+          message: 'Password lama wajib diisi'
+        });
+      }
       let hashedPassword = user.password || '';
       if (hashedPassword.startsWith('$2y$')) {
         hashedPassword = hashedPassword.replace('$2y$', '$2b$');
       }
-
       const isPasswordValid = await bcrypt.compare(old_password, hashedPassword);
       if (!isPasswordValid) {
         return res.status(401).json({
@@ -185,7 +204,7 @@ router.post('/change-password', authLimiter, async (req, res) => {
         });
       }
     }
-    // If no old_password, it's a first-time password change (admin/system initiated)
+    // first_login=true → boleh tanpa old_password (alur paksa ganti password awal)
 
     // Hash new password
     const saltRounds = 10;
@@ -548,7 +567,7 @@ router.get('/validate-token', async (req, res) => {
 // ==================== LOGIN ENDPOINTS ====================
 
 // Login endpoint untuk Siswa (Student)
-router.post('/login/siswa', async (req, res) => {
+router.post('/login/siswa', authLimiter, async (req, res) => {
   const { nisn, password, device_id } = req.body;
 
   try {
@@ -581,19 +600,15 @@ router.post('/login/siswa', async (req, res) => {
     const result = await pool.query(studentQuery, [nisn]);
 
     if (result.rows.length === 0) {
-      return res.status(401).json({
-        success: false,
-        message: 'NISN atau password salah'
-      });
+      return res.status(401).json({ success: false, message: LOGIN_INVALID.siswa });
     }
 
     const student = result.rows[0];
 
+    // Akun nonaktif: dulu 403 dengan pesan spesifik → membocorkan eksistensi akun.
+    // Sekarang pesan & status seragam dengan kegagalan kredensial lain.
     if (!student.is_active) {
-      return res.status(403).json({
-        success: false,
-        message: 'Akun Anda tidak aktif. Silakan hubungi admin.'
-      });
+      return res.status(401).json({ success: false, message: LOGIN_INVALID.siswa });
     }
 
     let hashedPassword = student.password || '';
@@ -604,10 +619,7 @@ router.post('/login/siswa', async (req, res) => {
     const isPasswordValid = await bcrypt.compare(password, hashedPassword);
 
     if (!isPasswordValid) {
-      return res.status(401).json({
-        success: false,
-        message: 'NISN atau password salah'
-      });
+      return res.status(401).json({ success: false, message: LOGIN_INVALID.siswa });
     }
 
     if (student.device_id && String(student.device_id) !== String(device_id)) {
@@ -628,12 +640,16 @@ router.post('/login/siswa', async (req, res) => {
     await pool.query('INSERT INTO history_login (user_id, login_at, status, device_id) VALUES ($1, NOW(), $2, $3)', [student.user_id, 'success', device_id]);
 
     delete student.password;
+    // Fix: kolom yang di-SELECT bernama `class_role` (dari student_class_roles),
+    // bukan `student_role`. Simpan dengan nama benar agar middleware requireKM
+    // (yang membaca role dari token) bisa berfungsi.
     const payload = {
       user_id: student.user_id,
       student_id: student.student_id,
       user_type: 'student',
-      student_role: student.student_role || 'STUDENT',
-      class_id: student.class_id
+      class_role: student.class_role || 'pelajar',
+      class_id: student.class_id,
+      jti: crypto.randomUUID() // untuk Redis revocation list
     };
 
     const studentSignOptions = { expiresIn: process.env.JWT_STUDENT_EXPIRE || '30d' };
@@ -671,7 +687,7 @@ router.post('/login/siswa', async (req, res) => {
 });
 
 // Login endpoint untuk Guru (Teacher)
-router.post('/login/guru', async (req, res) => {
+router.post('/login/guru', authLimiter, async (req, res) => {
   const { nip, password, device_id } = req.body;
 
   try {
@@ -699,26 +715,18 @@ router.post('/login/guru', async (req, res) => {
     const result = await pool.query(teacherQuery, [nip]);
 
     if (result.rows.length === 0) {
-      return res.status(401).json({
-        success: false,
-        message: 'NIP atau password salah'
-      });
+      return res.status(401).json({ success: false, message: LOGIN_INVALID.guru });
     }
 
     const teacher = result.rows[0];
 
+    // Role bukan teacher / akun nonaktif → pesan & status seragam (anti enumeration).
     if (teacher.role !== 'teacher') {
-      return res.status(403).json({
-        success: false,
-        message: 'Akun ini tidak memiliki akses sebagai guru.'
-      });
+      return res.status(401).json({ success: false, message: LOGIN_INVALID.guru });
     }
 
     if (!teacher.is_active) {
-      return res.status(403).json({
-        success: false,
-        message: 'Akun Anda tidak aktif. Silakan hubungi admin.'
-      });
+      return res.status(401).json({ success: false, message: LOGIN_INVALID.guru });
     }
 
     let hashedPassword = teacher.password || '';
@@ -729,10 +737,7 @@ router.post('/login/guru', async (req, res) => {
     const isPasswordValid = await bcrypt.compare(password, hashedPassword);
 
     if (!isPasswordValid) {
-      return res.status(401).json({
-        success: false,
-        message: 'NIP atau password salah'
-      });
+      return res.status(401).json({ success: false, message: LOGIN_INVALID.guru });
     }
 
     if (teacher.device_id && String(teacher.device_id) !== String(device_id)) {
@@ -827,7 +832,8 @@ router.post('/login/guru', async (req, res) => {
       user_type: 'teacher',
       department: teacher.department,
       teacher_roles: teacherRoles,
-      homeroom_classes: homeroomClassesValue
+      homeroom_classes: homeroomClassesValue,
+      jti: crypto.randomUUID() // untuk Redis revocation list
     };
 
     const teacherSignOptions = { expiresIn: process.env.JWT_TEACHER_EXPIRE || '30d' };
@@ -865,7 +871,7 @@ router.post('/login/guru', async (req, res) => {
 });
 
 // Login endpoint untuk Petugas MBG
-router.post('/login/petugas', async (req, res) => {
+router.post('/login/petugas', authLimiter, async (req, res) => {
   const { username, password } = req.body;
 
   try {
@@ -885,10 +891,7 @@ router.post('/login/petugas', async (req, res) => {
     const result = await pool.query(petugasQuery, [username]);
 
     if (result.rows.length === 0) {
-      return res.status(401).json({
-        success: false,
-        message: 'Username atau password salah'
-      });
+      return res.status(401).json({ success: false, message: LOGIN_INVALID.petugas });
     }
 
     const petugas = result.rows[0];
@@ -901,10 +904,7 @@ router.post('/login/petugas', async (req, res) => {
     const isPasswordValid = await bcrypt.compare(password, hashedPassword);
 
     if (!isPasswordValid) {
-      return res.status(401).json({
-        success: false,
-        message: 'Username atau password salah'
-      });
+      return res.status(401).json({ success: false, message: LOGIN_INVALID.petugas });
     }
 
     delete petugas.password;
@@ -930,7 +930,7 @@ router.post('/login/petugas', async (req, res) => {
 });
 
 // Login endpoint untuk Admin
-router.post('/login/admin', async (req, res) => {
+router.post('/login/admin', authLimiter, async (req, res) => {
   const { email, password, device_id } = req.body;
 
   try {
@@ -957,19 +957,15 @@ router.post('/login/admin', async (req, res) => {
     const result = await pool.query(adminQuery, [email]);
 
     if (result.rows.length === 0) {
-      return res.status(401).json({
-        success: false,
-        message: 'Email atau password salah'
-      });
+      return res.status(401).json({ success: false, message: LOGIN_INVALID.admin });
     }
 
     const admin = result.rows[0];
 
+    // Akun nonaktif: dulu 403 dengan pesan spesifik → bocor eksistensi akun.
+    // Sekarang seragam dengan jalur kredensial salah.
     if (!admin.is_active) {
-      return res.status(403).json({
-        success: false,
-        message: 'Akun Anda tidak aktif. Silakan hubungi superadmin.'
-      });
+      return res.status(401).json({ success: false, message: LOGIN_INVALID.admin });
     }
 
     let hashedPassword = admin.password || '';
@@ -980,10 +976,7 @@ router.post('/login/admin', async (req, res) => {
     const isPasswordValid = await bcrypt.compare(password, hashedPassword);
 
     if (!isPasswordValid) {
-      return res.status(401).json({
-        success: false,
-        message: 'Email atau password salah'
-      });
+      return res.status(401).json({ success: false, message: LOGIN_INVALID.admin });
     }
 
     // Check if device_id differs - create device change request if so
@@ -1021,7 +1014,8 @@ router.post('/login/admin', async (req, res) => {
     const payload = {
       user_id: admin.user_id,
       admin_id: admin.admin_id,
-      user_type: 'admin'
+      user_type: 'admin',
+      jti: crypto.randomUUID() // untuk Redis revocation list
     };
 
     const adminSignOptions = { expiresIn: process.env.JWT_ADMIN_EXPIRE || '7d' };
@@ -1049,6 +1043,52 @@ router.post('/login/admin', async (req, res) => {
       success: false,
       message: 'Terjadi kesalahan pada server'
     });
+  }
+});
+
+// ==================== LOGOUT / TOKEN REVOCATION ====================
+
+/**
+ * POST /api/auth/logout
+ * Memasukkan JWT ke Redis blacklist sehingga tidak bisa dipakai lagi sampai
+ * waktu expiry-nya alami. Token yang tidak punya `jti` (legacy) tidak akan
+ * dirubah — middleware juga melewati cek untuk token tanpa jti (backward compat).
+ *
+ * Tidak butuh password — cukup token. Kami `decode` (tidak `verify` ketat)
+ * sehingga token yang sudah expired pun bisa dilogout dengan elegan.
+ */
+router.post('/logout', authLimiter, async (req, res) => {
+  try {
+    const authHeader = req.headers['authorization'] || req.headers['Authorization'];
+    if (!authHeader || typeof authHeader !== 'string') {
+      return res.status(400).json({ success: false, message: 'Token tidak ditemukan.' });
+    }
+    const parts = authHeader.split(' ');
+    if (parts.length !== 2 || !/^Bearer$/i.test(parts[0])) {
+      return res.status(400).json({ success: false, message: 'Format token tidak valid.' });
+    }
+    const token = parts[1];
+
+    let decoded = null;
+    try {
+      // Verify dengan ignoreExpiration agar token expired pun bisa dilogout.
+      decoded = jwt.verify(token, process.env.JWT_SECRET, { ignoreExpiration: true });
+    } catch (_) {
+      // Token rusak / signature salah → tidak ada yang bisa di-revoke, anggap sukses.
+      return res.json({ success: true, message: 'Logout selesai.' });
+    }
+
+    if (decoded && decoded.jti) {
+      const ttl = decoded.exp
+        ? Math.max(1, Math.floor(decoded.exp - Date.now() / 1000))
+        : 60 * 60 * 24 * 30; // fallback 30 hari (sesuai max lifetime token)
+      await revokeToken(decoded.jti, ttl);
+    }
+
+    return res.json({ success: true, message: 'Logout berhasil.' });
+  } catch (error) {
+    console.error('logout error:', error);
+    return res.status(500).json({ success: false, message: 'Terjadi kesalahan pada server' });
   }
 });
 

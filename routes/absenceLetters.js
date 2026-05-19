@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const { localDateStr } = require('../utils/dateHelper');
-const { requireStudent, requireTeacher } = require('../middlewares/auth.middleware');
+const { requireStudent, requireTeacher, requireAdmin } = require('../middlewares/auth.middleware');
 
 // ============================================================
 // ABSENCE LETTERS (Surat Izin / Sakit)
@@ -403,7 +403,7 @@ router.patch('/reject/:id', requireTeacher, async (req, res) => {
 // --------------------------------------------------
 // GET /pending/all — Admin gets all pending letters
 // --------------------------------------------------
-router.get('/pending/all', async (req, res) => {
+router.get('/pending/all', requireAdmin, async (req, res) => {
   try {
     const { user_type } = req.query;
 
@@ -442,7 +442,7 @@ router.get('/pending/all', async (req, res) => {
 // --------------------------------------------------
 // PATCH /approve/admin/:id — Admin final approval
 // --------------------------------------------------
-router.patch('/approve/admin/:id', async (req, res) => {
+router.patch('/approve/admin/:id', requireAdmin, async (req, res) => {
   try {
     const letterId = parseInt(req.params.id);
     const { admin_id } = req.body;
@@ -556,7 +556,7 @@ router.patch('/approve/admin/:id', async (req, res) => {
 // --------------------------------------------------
 // PATCH /reject/admin/:id — Admin rejects a letter
 // --------------------------------------------------
-router.patch('/reject/admin/:id', async (req, res) => {
+router.patch('/reject/admin/:id', requireAdmin, async (req, res) => {
   try {
     const letterId = parseInt(req.params.id);
     const { admin_id, rejection_note } = req.body;
@@ -598,7 +598,7 @@ router.patch('/reject/admin/:id', async (req, res) => {
 // --------------------------------------------------
 // GET / — List all absence letters (admin)
 // --------------------------------------------------
-router.get('/', async (req, res) => {
+router.get('/', requireAdmin, async (req, res) => {
   try {
     const { user_type, status, date, page = 1, limit = 20 } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);

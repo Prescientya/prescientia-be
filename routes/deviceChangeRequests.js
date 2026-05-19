@@ -3,10 +3,13 @@ const router = express.Router();
 const pool = require('../config/database');
 const bcrypt = require('bcrypt');
 const { requireAuth } = require('../middlewares/auth.middleware');
+const { authLimiter } = require('../middlewares/rateLimiter');
 
 // POST - Create device change request from login screen (no auth required, verifies credentials)
 // Used when student is on login page and device_id mismatch occurs — they have no token yet.
-router.post('/from-login', async (req, res) => {
+// SECURITY: pakai authLimiter karena endpoint ini memverifikasi NIS+password —
+// tanpa rate-limit kredensial, brute-force masih terbuka via flow ini.
+router.post('/from-login', authLimiter, async (req, res) => {
   try {
     const { nis, password, device_id_old, device_id_new } = req.body;
 
@@ -96,6 +99,105 @@ router.post('/from-login', async (req, res) => {
 
   } catch (error) {
     console.error('Create device change request (from-login) error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Terjadi kesalahan pada server',
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
+    });
+  }
+});
+
+// POST - Create device change request from teacher login screen (no auth required, verifies NIP+password)
+// Used when teacher is on login page and device_id mismatch occurs — they have no token yet.
+router.post('/from-login-guru', authLimiter, async (req, res) => {
+  try {
+    const { nip, password, device_id_old, device_id_new } = req.body;
+
+    if (!nip || !password || !device_id_old || !device_id_new) {
+      return res.status(400).json({
+        success: false,
+        message: 'nip, password, device_id_old, dan device_id_new harus diisi'
+      });
+    }
+
+    // Verify teacher credentials
+    const teacherQuery = `
+      SELECT t.id as teacher_id, t.nip, t.name,
+             u.id as user_id, u.password, u.is_active, u.device_id
+      FROM teachers t
+      INNER JOIN users u ON t.user_id = u.id
+      WHERE t.nip COLLATE "C" = $1 COLLATE "C"
+    `;
+    const teacherResult = await pool.query(teacherQuery, [nip]);
+
+    if (teacherResult.rows.length === 0) {
+      return res.status(401).json({
+        success: false,
+        message: 'NIP atau password salah'
+      });
+    }
+
+    const teacher = teacherResult.rows[0];
+
+    if (!teacher.is_active) {
+      return res.status(403).json({
+        success: false,
+        message: 'Akun tidak aktif. Silakan hubungi admin.'
+      });
+    }
+
+    // Verify password
+    let hashedPassword = teacher.password || '';
+    if (hashedPassword.startsWith('$2y$')) {
+      hashedPassword = hashedPassword.replace('$2y$', '$2b$');
+    }
+
+    const isPasswordValid = await bcrypt.compare(password, hashedPassword);
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        success: false,
+        message: 'NIP atau password salah'
+      });
+    }
+
+    // Check for existing pending request
+    const existingRequestQuery = `
+      SELECT id FROM device_change_requests
+      WHERE user_id = $1 AND status = 'pending'
+      ORDER BY created_at DESC LIMIT 1
+    `;
+    const existingRequest = await pool.query(existingRequestQuery, [teacher.user_id]);
+
+    if (existingRequest.rows.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: 'Sudah ada pengajuan pergantian device yang masih pending untuk user ini'
+      });
+    }
+
+    // Create new device change request
+    const insertQuery = `
+      INSERT INTO device_change_requests
+        (user_id, device_id_old, device_id_new, status, submitted_by, created_at, updated_at)
+      VALUES ($1, $2, $3, 'pending', $4, NOW(), NOW())
+      RETURNING *
+    `;
+
+    const result = await pool.query(insertQuery, [
+      teacher.user_id,
+      device_id_old,
+      device_id_new,
+      teacher.name
+    ]);
+
+    res.status(201).json({
+      success: true,
+      message: 'Pengajuan pergantian device berhasil dibuat',
+      data: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('Create device change request (from-login-guru) error:', error);
     res.status(500).json({
       success: false,
       message: 'Terjadi kesalahan pada server',

@@ -4,6 +4,21 @@ const pool = require('../config/database');
 const { requireStudent, requireAuth } = require('../middlewares/auth.middleware');
 const { readLimiter } = require('../middlewares/rateLimiter');
 
+// SECURITY: cegah IDOR — siswa hanya boleh melihat ringkasan dirinya sendiri.
+// Guru & admin tetap dibolehkan akses lintas-siswa (monitoring).
+// Sebelumnya endpoint hanya pakai `requireAuth` sehingga siswa A bisa pass
+// studentId siswa B di URL dan dapat data orang lain.
+const ensureSummaryAccess = (req, res, studentId) => {
+  const u = req.user || {};
+  if (u.user_type === 'student') {
+    if (String(u.student_id) !== String(studentId)) {
+      res.status(403).json({ success: false, message: 'Akses terlarang: tidak boleh melihat ringkasan siswa lain' });
+      return false;
+    }
+  }
+  return true;
+};
+
 const parsePeriodQuery = (req) => {
   const { year, month } = req.query;
 
@@ -116,6 +131,7 @@ router.get('/:studentId/monthly', requireAuth, readLimiter, async (req, res) => 
   try {
     const { studentId } = req.params;
     if (!studentId) return res.status(400).json({ success: false, message: 'Student ID harus diisi' });
+    if (!ensureSummaryAccess(req, res, studentId)) return;
 
     const period = parsePeriodQuery(req);
     if (period.error) return res.status(400).json({ success: false, message: period.error });
@@ -136,6 +152,7 @@ router.get('/:studentId', requireAuth, readLimiter, async (req, res) => {
     if (!studentId) {
       return res.status(400).json({ success: false, message: 'Student ID harus diisi' });
     }
+    if (!ensureSummaryAccess(req, res, studentId)) return;
 
     const period = parsePeriodQuery(req);
     if (period.error) return res.status(400).json({ success: false, message: period.error });

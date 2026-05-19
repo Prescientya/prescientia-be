@@ -6,26 +6,28 @@ const { attendanceLimiter, readLimiter } = require('../middlewares/rateLimiter')
 
 // ==================== WIFI-BASED ATTENDANCE VALIDATION ====================
 
+// Format BSSID standar: 6 oktet hex dipisah ':' (case-insensitive)
+const BSSID_FORMAT = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/;
+
 /**
  * Match scanned Wi-Fi networks against database records.
- * 
+ *
+ * SECURITY: hanya cocokkan berdasarkan BSSID (MAC address AP). Fallback SSID
+ * dihapus karena SSID adalah nama jaringan yang sepele di-clone via hotspot
+ * dengan nama yang sama — bukan bukti kehadiran fisik di sekolah.
+ *
  * @param {Array} scannedWifi - Array of { ssid, bssid } from client
  * @param {Array} dbNetworks - Array of rows from wifi_networks table
  * @returns {Object|null} - Matched network info or null if no match
- * 
- * Matching priority:
- * 1. BSSID (exact, case-insensitive) - most reliable
- * 2. SSID (exact, case-insensitive) - fallback only
  */
 function matchWifiNetworks(scannedWifi, dbNetworks) {
-  // First pass: Try BSSID matching (highest priority)
   for (const scanned of scannedWifi) {
     const scannedBssid = (scanned.bssid || '').toLowerCase().trim();
     if (!scannedBssid) continue;
 
     for (const dbNet of dbNetworks) {
       const dbBssid = (dbNet.bssid || '').toLowerCase().trim();
-      
+
       if (scannedBssid === dbBssid) {
         console.log(`[Attendance] BSSID match found: ${scannedBssid}`);
         return {
@@ -40,29 +42,6 @@ function matchWifiNetworks(scannedWifi, dbNetworks) {
     }
   }
 
-  // Second pass: Try SSID matching (fallback)
-  for (const scanned of scannedWifi) {
-    const scannedSsid = (scanned.ssid || '').toLowerCase().trim();
-    if (!scannedSsid) continue;
-
-    for (const dbNet of dbNetworks) {
-      const dbSsid = (dbNet.ssid || '').toLowerCase().trim();
-      
-      if (scannedSsid === dbSsid) {
-        console.log(`[Attendance] SSID match found: ${scannedSsid}`);
-        return {
-          wifi_id: dbNet.id,
-          detected_by: 'SSID',
-          matched_ssid: dbSsid,
-          matched_bssid: dbNet.bssid,
-          scanned_ssid: scannedSsid,
-          scanned_bssid: scanned.bssid,
-        };
-      }
-    }
-  }
-
-  // No match found
   return null;
 }
 
@@ -102,13 +81,16 @@ function matchWifiNetworks(scannedWifi, dbNetworks) {
  */
 router.post('/scan', requireStudent, attendanceLimiter, async (req, res) => {
   try {
-    const { user_id, scanned_wifi } = req.body;
+    const { scanned_wifi } = req.body;
+    // SECURITY: user_id WAJIB diambil dari JWT (req.user) — jangan trust body.
+    // Sebelumnya user_id dibaca dari body sehingga siswa A bisa absen atas nama siswa B.
+    const user_id = req.user && req.user.user_id;
 
     // ========== Input Validation ==========
     if (!user_id) {
-      return res.status(400).json({
+      return res.status(401).json({
         success: false,
-        message: 'user_id is required'
+        message: 'Token tidak mengandung user_id yang valid'
       });
     }
 
@@ -119,8 +101,45 @@ router.post('/scan', requireStudent, attendanceLimiter, async (req, res) => {
       });
     }
 
+    // SECURITY: pastikan setiap entry membawa BSSID format MAC valid.
+    // Tolak payload yang berisi BSSID asal/string sampah agar tidak mengisi log
+    // dengan probe palsu dan agar matching tidak rancu.
+    const sanitizedWifi = [];
+    for (const w of scanned_wifi) {
+      if (!w || typeof w !== 'object') continue;
+      const bssid = (w.bssid || '').toString().toLowerCase().trim();
+      if (!BSSID_FORMAT.test(bssid)) continue;
+      sanitizedWifi.push({
+        ssid: typeof w.ssid === 'string' ? w.ssid : null,
+        bssid,
+        rssi: Number.isFinite(w.rssi) ? w.rssi : null,
+        frequency: Number.isFinite(w.frequency) ? w.frequency : null,
+      });
+    }
+    if (sanitizedWifi.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Format BSSID tidak valid pada scanned_wifi'
+      });
+    }
+
     console.log(`[Attendance] Validating attendance for user_id=${user_id}`);
-    console.log(`[Attendance] Received ${scanned_wifi.length} scanned networks`);
+    console.log(`[Attendance] Received ${sanitizedWifi.length} valid scanned networks (rssi/freq disertakan bila ada)`);
+
+    // ========== Cegah Duplikat Absensi Hari Ini ==========
+    const dupCheck = await pool.query(
+      `SELECT id FROM wifi_presence_logs
+       WHERE user_id = $1 AND DATE(detected_at) = CURRENT_DATE
+       LIMIT 1`,
+      [user_id]
+    );
+    if (dupCheck.rows.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: 'Anda sudah melakukan absensi hari ini',
+        already_attended: true
+      });
+    }
 
     // ========== Validate User Exists ==========
     const userCheck = await pool.query(
@@ -151,7 +170,7 @@ router.post('/scan', requireStudent, attendanceLimiter, async (req, res) => {
     }
 
     // ========== Match Scanned Wi-Fi Against Database ==========
-    const match = matchWifiNetworks(scanned_wifi, dbNetworks);
+    const match = matchWifiNetworks(sanitizedWifi, dbNetworks);
 
     if (!match) {
       // No authorized Wi-Fi found in scan results
@@ -213,6 +232,17 @@ router.post('/scan', requireStudent, attendanceLimiter, async (req, res) => {
 router.get('/check/:user_id', requireAuth, readLimiter, async (req, res) => {
   try {
     const { user_id } = req.params;
+
+    // SECURITY: cegah user A mengintip status absensi user B.
+    // Hanya owner (atau admin) yang boleh cek.
+    const requesterId = req.user && req.user.user_id;
+    const requesterType = req.user && req.user.user_type;
+    if (requesterType !== 'admin' && String(requesterId) !== String(user_id)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Akses terlarang: tidak boleh memeriksa status absensi pengguna lain'
+      });
+    }
 
     // Check for today's presence log
     const result = await pool.query(`

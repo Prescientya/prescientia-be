@@ -54,6 +54,15 @@ router.get('/', requireAdmin, async (req, res) => {
 router.get('/classes-with-attendance/:teacherId', requireTeacher, async (req, res) => {
   try {
     const { teacherId } = req.params;
+    // SECURITY: cegah IDOR — guru A tidak boleh pass id guru B di URL.
+    // teacherId hanya untuk konsistensi URL; otoritatifnya dari token.
+    const tokenTeacherId = req.user && req.user.teacher_id;
+    if (!tokenTeacherId || String(tokenTeacherId) !== String(teacherId)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Akses terlarang: tidak boleh melihat kelas guru lain'
+      });
+    }
     const { attendance_date } = req.query;
     const targetDate = attendance_date || localDateStr(new Date());
 

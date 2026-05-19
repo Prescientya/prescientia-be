@@ -43,10 +43,20 @@ const { testConnection } = require('./config/db-helper');
 const pool = require('./config/database');
 const { displayRoutes } = require('./utils/routeAnalyzer2');
 const { readLimiter, attendanceLimiter } = require('./middlewares/rateLimiter');
-const { requireAuth } = require('./middleware/auth.middleware');
+const { requireAuth } = require('./middlewares/auth.middleware');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// SECURITY: hormati X-Forwarded-* dari reverse proxy (nginx/cloudflare/render)
+// agar `req.ip` akurat untuk rate-limit per-IP. Tanpa ini, attacker bisa spoof
+// header X-Forwarded-For dan mem-bypass rate limit karena express memperlakukan
+// req.ip sebagai IP proxy (selalu sama). Default 1 hop; override via env.
+app.set('trust proxy', Number(process.env.TRUST_PROXY) || 1);
+
+// Format BSSID standar (6 oktet hex dipisah ':'), dipakai untuk validasi
+// payload WiFi sebelum ditulis ke DB.
+const BSSID_FORMAT_RE = /^[0-9a-f]{2}(:[0-9a-f]{2}){5}$/;
 
 // === SECURITY MIDDLEWARE ===
 
@@ -145,19 +155,24 @@ app.post('/api/wifi-info', requireAuth, attendanceLimiter, async (req, res) => {
     const { ssid, bssid, ip, signalStrength, frequency, isSchoolWifi } = req.body;
     const userId = req.user.user_id;
     console.log('[WiFi Info]', { userId, ssid, bssid, ip, isSchoolWifi });
-    // Cari wifi_network berdasarkan BSSID atau SSID untuk mendapatkan wifi_id
-    if (ssid || bssid) {
+
+    // SECURITY: BSSID-only matching, sejalan dengan /api/attendance/scan.
+    // SSID fallback dihapus karena SSID trivial di-clone via hotspot — bisa
+    // dipakai untuk inject log presensi palsu. Payload tanpa BSSID format
+    // valid tidak akan menulis ke DB.
+    const normalizedBssid = (bssid || '').toString().toLowerCase().trim();
+    if (normalizedBssid && BSSID_FORMAT_RE.test(normalizedBssid)) {
       try {
         const wifiResult = await pool.query(
-          `SELECT id FROM wifi_networks WHERE bssid = $1 OR ssid = $2 LIMIT 1`,
-          [bssid || null, ssid || null]
+          `SELECT id FROM wifi_networks WHERE bssid = $1 LIMIT 1`,
+          [normalizedBssid]
         );
         if (wifiResult.rows.length > 0) {
           const wifiId = wifiResult.rows[0].id;
           await pool.query(
             `INSERT INTO wifi_presence_logs (user_id, wifi_id, detected_at, detected_by)
-             VALUES ($1, $2, NOW(), $3)`,
-            [userId, wifiId, bssid ? 'BSSID' : 'SSID']
+             VALUES ($1, $2, NOW(), 'BSSID')`,
+            [userId, wifiId]
           );
         }
       } catch (dbErr) {
