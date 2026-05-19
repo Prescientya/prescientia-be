@@ -29,7 +29,9 @@ const mysqlPool = mysql.createPool({
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   waitForConnections: true,
-  connectionLimit: 10,
+  // 20 koneksi: cukup untuk burst absensi pagi (30–60 request paralel) tanpa exhaust
+  // FOR UPDATE lock. Tiap koneksi yg tertahan menunggu lock = 1 connection occupied.
+  connectionLimit: Number(process.env.DB_POOL_SIZE) || 20,
   queueLimit: 0,
 });
 
@@ -149,6 +151,9 @@ const pool = {
         return runQuery(boundQuery, text, params);
       },
       release: () => conn.release(),
+      beginTransaction: () => conn.beginTransaction(),
+      commit: () => conn.commit(),
+      rollback: () => conn.rollback(),
       lastQuery: null,
     };
   },

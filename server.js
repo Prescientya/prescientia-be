@@ -154,7 +154,9 @@ app.post('/api/wifi-info', requireAuth, attendanceLimiter, async (req, res) => {
   try {
     const { ssid, bssid, ip, signalStrength, frequency, isSchoolWifi } = req.body;
     const userId = req.user.user_id;
-    console.log('[WiFi Info]', { userId, ssid, bssid, ip, isSchoolWifi });
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[WiFi Info]', { userId, ssid, bssid, ip, isSchoolWifi });
+    }
 
     // SECURITY: BSSID-only matching, sejalan dengan /api/attendance/scan.
     // SSID fallback dihapus karena SSID trivial di-clone via hotspot — bisa

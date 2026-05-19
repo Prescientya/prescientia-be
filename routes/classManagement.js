@@ -237,16 +237,44 @@ router.post('/attendance/batch-submit', requireStudent, async (req, res) => {
 
     const calendar_id = calendarQuery.rows.length > 0 ? calendarQuery.rows[0].id : null;
 
+    // Prefetch (anti N+1): kumpulkan student_id unik dari payload, lalu 2 SELECT batch
+    // sebelum loop — sebelumnya tiap iterasi 2 SELECT (200+ query untuk 100 baris).
+    const uniqueStudentIds = [...new Set(
+      attendances.map(a => Number(a.student_id)).filter(n => Number.isFinite(n) && n > 0)
+    )];
+
+    const validStudents = new Set();
+    const existingByStudent = new Map();
+    if (uniqueStudentIds.length > 0) {
+      const placeholders = uniqueStudentIds.map((_, i) => `$${i + 1}`).join(',');
+      const classIdParam = `$${uniqueStudentIds.length + 1}`;
+
+      const sR = await client.query(
+        `SELECT id FROM students WHERE id IN (${placeholders}) AND class_id = ${classIdParam}`,
+        [...uniqueStudentIds, class_id]
+      );
+      for (const r of sR.rows) validStudents.add(Number(r.id));
+
+      const dateParam = `$${uniqueStudentIds.length + 2}`;
+      const eR = await client.query(
+        `SELECT id, student_id FROM student_attendances
+         WHERE student_id IN (${placeholders}) AND class_id = ${classIdParam}
+           AND DATE(created_at) = DATE(${dateParam})`,
+        [...uniqueStudentIds, class_id, date]
+      );
+      for (const r of eR.rows) existingByStudent.set(Number(r.student_id), r.id);
+    }
+
     await client.query('BEGIN');
-    
+
     let successCount = 0;
     let failedCount = 0;
     const details = [];
-    
+
     for (const attendance of attendances) {
       try {
         const { student_id, status, notes } = attendance;
-        
+
         // Validasi status
         if (!['sakit', 'izin', 'alpa'].includes(status)) {
           details.push({
@@ -257,14 +285,8 @@ router.post('/attendance/batch-submit', requireStudent, async (req, res) => {
           failedCount++;
           continue;
         }
-        
-        // Cek apakah student ada di kelas tersebut
-        const studentCheck = await client.query(
-          'SELECT id FROM students WHERE id = $1 AND class_id = $2',
-          [student_id, class_id]
-        );
-        
-        if (studentCheck.rows.length === 0) {
+
+        if (!validStudents.has(Number(student_id))) {
           details.push({
             student_id: student_id,
             success: false,
@@ -273,22 +295,12 @@ router.post('/attendance/batch-submit', requireStudent, async (req, res) => {
           failedCount++;
           continue;
         }
-        
-        // Cek apakah sudah ada attendance untuk student ini di tanggal ini
-        const existingCheck = await client.query(
-          // PostgreSQL: DATE(created_at AT TIME ZONE 'UTC') = DATE($3::date)
-          // MySQL: DATE(created_at) = DATE(?) — MySQL stores as-is, no timezone cast
-          `SELECT id FROM student_attendances 
-           WHERE student_id = $1 
-             AND class_id = $2 
-             AND DATE(created_at) = DATE($3)`,
-          [student_id, class_id, date]
-        );
-        
-        if (existingCheck.rows.length > 0) {
+
+        const existingId = existingByStudent.get(Number(student_id));
+        if (existingId) {
           details.push({
             student_id: student_id,
-            attendance_id: existingCheck.rows[0].id,
+            attendance_id: existingId,
             success: false,
             error: 'Attendance untuk siswa ini sudah ada di tanggal ini. Gunakan batch-update untuk mengubah.'
           });
@@ -445,16 +457,44 @@ router.patch('/attendance/batch-update', requireStudent, async (req, res) => {
       });
     }
 
+    // Prefetch (anti N+1): satu SELECT untuk semua attendance_id + satu SELECT untuk semua detail-nya,
+    // sebelumnya tiap iterasi 1–2 SELECT (200+ query untuk 100 baris).
+    const uniqueAttendanceIds = [...new Set(
+      attendances.map(a => Number(a.attendance_id)).filter(n => Number.isFinite(n) && n > 0)
+    )];
+
+    const existingAttMap = new Map(); // id -> { student_id, status }
+    const existingDetailSet = new Set(); // attendance_id yang sudah punya detail
+    if (uniqueAttendanceIds.length > 0) {
+      const ph = uniqueAttendanceIds.map((_, i) => `$${i + 1}`).join(',');
+      const classIdParam = `$${uniqueAttendanceIds.length + 1}`;
+
+      const aR = await client.query(
+        `SELECT id, student_id, status FROM student_attendances
+         WHERE id IN (${ph}) AND class_id = ${classIdParam}`,
+        [...uniqueAttendanceIds, class_id]
+      );
+      for (const r of aR.rows) {
+        existingAttMap.set(Number(r.id), { student_id: r.student_id, status: r.status });
+      }
+
+      const dR = await client.query(
+        `SELECT attendance_id FROM student_attendance_details WHERE attendance_id IN (${ph})`,
+        [...uniqueAttendanceIds]
+      );
+      for (const r of dR.rows) existingDetailSet.add(Number(r.attendance_id));
+    }
+
     await client.query('BEGIN');
-    
+
     let successCount = 0;
     let failedCount = 0;
     const details = [];
-    
+
     for (const attendance of attendances) {
       try {
         const { attendance_id, student_id, status, notes } = attendance;
-        
+
         // Validasi status
         if (!['sakit', 'izin', 'alpa', 'hadir'].includes(status)) {
           details.push({
@@ -466,14 +506,10 @@ router.patch('/attendance/batch-update', requireStudent, async (req, res) => {
           failedCount++;
           continue;
         }
-        
-        // Get existing attendance record
-        const existingQuery = await client.query(
-          'SELECT id, student_id, status FROM student_attendances WHERE id = $1 AND student_id = $2 AND class_id = $3',
-          [attendance_id, student_id, class_id]
-        );
-        
-        if (existingQuery.rows.length === 0) {
+
+        const existing = existingAttMap.get(Number(attendance_id));
+        // Tetap verifikasi student_id pada attendance — cegah ID yang valid milik kelas ini tapi siswa lain
+        if (!existing || Number(existing.student_id) !== Number(student_id)) {
           details.push({
             attendance_id: attendance_id,
             student_id: student_id,
@@ -483,8 +519,8 @@ router.patch('/attendance/batch-update', requireStudent, async (req, res) => {
           failedCount++;
           continue;
         }
-        
-        const oldStatus = existingQuery.rows[0].status;
+
+        const oldStatus = existing.status;
         
         // Untuk sakit/izin: jangan langsung ubah status, buat detail pending untuk konfirmasi wali kelas
         // Untuk alpa/hadir: langsung update status
@@ -507,40 +543,28 @@ router.patch('/attendance/batch-update', requireStudent, async (req, res) => {
           await client.query(updateQuery, [savedStatus, attendance_id, notes || null]);
         }
         
-        // Handle attendance details
+        // Handle attendance details — pakai existingDetailSet dari prefetch (anti N+1)
         if (needsApproval) {
-          // Cek apakah sudah ada detail pending untuk attendance ini
-          const detailCheck = await client.query(
-            'SELECT id, approval_status FROM student_attendance_details WHERE attendance_id = $1',
-            [attendance_id]
-          );
-          
-          if (detailCheck.rows.length > 0) {
+          if (existingDetailSet.has(Number(attendance_id))) {
             // Update existing detail — reset ke pending
             await client.query(
-              `UPDATE student_attendance_details 
-               SET status = $1, description = $2, approval_status = 'pending', 
-                   approved_by = NULL, approved_at = NULL, updated_at = NOW() 
+              `UPDATE student_attendance_details
+               SET status = $1, description = $2, approval_status = 'pending',
+                   approved_by = NULL, approved_at = NULL, updated_at = NOW()
                WHERE attendance_id = $3`,
               [status, notes || 'Dilaporkan oleh petugas kelas', attendance_id]
             );
           } else {
-            // Insert new detail dengan pending
             await client.query(
-              `INSERT INTO student_attendance_details 
-               (attendance_id, status, description, approval_status, created_at, updated_at) 
+              `INSERT INTO student_attendance_details
+               (attendance_id, status, description, approval_status, created_at, updated_at)
                VALUES ($1, $2, $3, 'pending', NOW(), NOW())`,
               [attendance_id, status, notes || 'Dilaporkan oleh petugas kelas']
             );
+            existingDetailSet.add(Number(attendance_id));
           }
         } else if (notes) {
-          // Untuk alpa/hadir dengan notes
-          const detailCheck = await client.query(
-            'SELECT id FROM student_attendance_details WHERE attendance_id = $1',
-            [attendance_id]
-          );
-          
-          if (detailCheck.rows.length > 0) {
+          if (existingDetailSet.has(Number(attendance_id))) {
             await client.query(
               `UPDATE student_attendance_details SET status = $1, description = $2, approval_status = 'approved', updated_at = NOW() WHERE attendance_id = $3`,
               [status, notes, attendance_id]
@@ -550,6 +574,7 @@ router.patch('/attendance/batch-update', requireStudent, async (req, res) => {
               `INSERT INTO student_attendance_details (attendance_id, status, description, approval_status, created_at, updated_at) VALUES ($1, $2, $3, 'approved', NOW(), NOW())`,
               [attendance_id, status, notes]
             );
+            existingDetailSet.add(Number(attendance_id));
           }
         }
         

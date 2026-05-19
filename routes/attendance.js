@@ -4,6 +4,10 @@ const pool = require('../config/database');
 const { requireAuth, requireStudent } = require('../middlewares/auth.middleware');
 const { attendanceLimiter, readLimiter } = require('../middlewares/rateLimiter');
 
+// Logging hanya di non-production agar tidak membanjiri stdout di-prod (1 log per scan = ratusan/ribuan baris/jam).
+const isDev = process.env.NODE_ENV !== 'production';
+const devLog = (...args) => { if (isDev) console.log(...args); };
+
 // ==================== WIFI-BASED ATTENDANCE VALIDATION ====================
 
 // Format BSSID standar: 6 oktet hex dipisah ':' (case-insensitive)
@@ -29,7 +33,7 @@ function matchWifiNetworks(scannedWifi, dbNetworks) {
       const dbBssid = (dbNet.bssid || '').toLowerCase().trim();
 
       if (scannedBssid === dbBssid) {
-        console.log(`[Attendance] BSSID match found: ${scannedBssid}`);
+        devLog(`[Attendance] BSSID match found: ${scannedBssid}`);
         return {
           wifi_id: dbNet.id,
           detected_by: 'BSSID',
@@ -123,8 +127,8 @@ router.post('/scan', requireStudent, attendanceLimiter, async (req, res) => {
       });
     }
 
-    console.log(`[Attendance] Validating attendance for user_id=${user_id}`);
-    console.log(`[Attendance] Received ${sanitizedWifi.length} valid scanned networks (rssi/freq disertakan bila ada)`);
+    devLog(`[Attendance] Validating attendance for user_id=${user_id}`);
+    devLog(`[Attendance] Received ${sanitizedWifi.length} valid scanned networks (rssi/freq disertakan bila ada)`);
 
     // ========== Cegah Duplikat Absensi Hari Ini ==========
     const dupCheck = await pool.query(
@@ -160,7 +164,7 @@ router.post('/scan', requireStudent, attendanceLimiter, async (req, res) => {
     );
     const dbNetworks = wifiResult.rows;
 
-    console.log(`[Attendance] Database has ${dbNetworks.length} registered networks`);
+    devLog(`[Attendance] Database has ${dbNetworks.length} registered networks`);
 
     if (dbNetworks.length === 0) {
       return res.status(500).json({
@@ -174,7 +178,7 @@ router.post('/scan', requireStudent, attendanceLimiter, async (req, res) => {
 
     if (!match) {
       // No authorized Wi-Fi found in scan results
-      console.log(`[Attendance] No match found for user_id=${user_id}`);
+      devLog(`[Attendance] No match found for user_id=${user_id}`);
       return res.status(403).json({
         success: false,
         message: 'Not connected to authorized school Wi-Fi',
@@ -197,7 +201,7 @@ router.post('/scan', requireStudent, attendanceLimiter, async (req, res) => {
 
     const presenceLog = insertResult.rows[0];
 
-    console.log(`[Attendance] Presence logged: id=${presenceLog.id}, wifi_id=${match.wifi_id}, detected_by=${match.detected_by}`);
+    devLog(`[Attendance] Presence logged: id=${presenceLog.id}, wifi_id=${match.wifi_id}, detected_by=${match.detected_by}`);
 
     // ========== Success Response ==========
     return res.status(200).json({

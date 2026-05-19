@@ -412,57 +412,79 @@ router.post('/app/login', requireStudent, async (req, res) => {
       return res.status(404).json({ success: false, message: 'Calendar (jadwal) tidak ditemukan' });
     }
 
-    // Check existing attendance (unique constraint student_id + calendar_id)
-    const existQ = 'SELECT * FROM student_attendances WHERE student_id = $1 AND calendar_id = $2 LIMIT 1';
-    const existR = await pool.query(existQ, [student_id, calendar_id]);
-    if (existR.rows.length > 0) {
-      const existing = existR.rows[0];
-      // Special case: record exists but check_in_time was never set — patch it in
-      if (!existing.check_in_time && check_in_time) {
-        const upd = await pool.query(
-          `UPDATE student_attendances
-           SET check_in_time = $1,
-               updated_by_role = 'system',
-               updated_by_teacher_id = NULL,
-               change_reason = 'Auto patch check_in_time saat login app',
-               updated_at = NOW()
-           WHERE id = $2
-           RETURNING *`,
-          [check_in_time, existing.id]
-        );
-        return res.json({ success: true, message: 'Student attendance updated (check_in_time)', data: upd.rows[0] });
-      }
-      // True duplicate: attendance for this student + calendar already fully exists
-      return res.status(409).json({
-        success: false,
-        message: 'Attendance untuk hari ini sudah tercatat.',
-        data: existing
-      });
-    }
-
-    const inTime = check_in_time || new Date().toISOString();
-    // determine status based on check-in time: after 06:30 -> 'terlambat'
+    const inTime = (check_in_time || new Date().toISOString()).replace('T', ' ').slice(0, 19);
     let status = 'hadir';
     try {
       const dt = new Date(inTime);
       const hr = dt.getHours();
       const min = dt.getMinutes();
-      const isAfter0630 = (hr > 6) || (hr === 6 && min > 30);
-      if (isAfter0630) {
-        status = 'terlambat';
-      }
-    } catch (e) {
-      // if invalid date, keep default 'hadir'
-    }
+      if ((hr > 6) || (hr === 6 && min > 30)) status = 'terlambat';
+    } catch (e) { /* invalid date, keep 'hadir' */ }
 
-    const insertQ = `
-      INSERT INTO student_attendances
-      (student_id, class_id, calendar_id, check_in_time, status, source, updated_by_role, updated_by_teacher_id, change_reason, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, 'system', NULL, 'Auto create attendance saat login app', NOW(), NOW())
-      RETURNING *
-    `;
-    const insertR = await pool.query(insertQ, [student_id, class_id, calendar_id, inTime, status, source]);
-    return res.status(201).json({ success: true, message: 'Student attendance created (login)', data: insertR.rows[0] });
+    // Bungkus cek-duplikat + write dalam satu transaksi dengan row-level lock
+    // agar 20-30 request siswa yang datang bersamaan tidak bisa lolos cek duplikat
+    // secara bersamaan dan menghasilkan double INSERT.
+    const client = await pool.connect();
+    try {
+      await client.beginTransaction();
+
+      // SELECT ... FOR UPDATE: lock baris yang cocok (atau gap jika belum ada baris)
+      // sehingga request paralel kedua harus menunggu hingga COMMIT/ROLLBACK pertama.
+      const existR = await client.query(
+        'SELECT id, check_in_time FROM student_attendances WHERE student_id = $1 AND calendar_id = $2 LIMIT 1 FOR UPDATE',
+        [student_id, calendar_id]
+      );
+
+      if (existR.rows.length > 0) {
+        const existing = existR.rows[0];
+        // Special case: record ada tapi check_in_time belum di-set — patch saja
+        if (!existing.check_in_time && check_in_time) {
+          const upd = await client.query(
+            `UPDATE student_attendances
+             SET check_in_time = $1,
+                 updated_by_role = 'system',
+                 updated_by_teacher_id = NULL,
+                 change_reason = 'Auto patch check_in_time saat login app',
+                 updated_at = NOW()
+             WHERE id = $2
+             RETURNING *`,
+            [check_in_time, existing.id]
+          );
+          await client.commit();
+          client.release();
+          return res.json({ success: true, message: 'Student attendance updated (check_in_time)', data: upd.rows[0] });
+        }
+        // Duplikat sejati — rollback untuk lepas lock, return 409
+        await client.rollback();
+        client.release();
+        return res.status(409).json({
+          success: false,
+          already_attended: true,
+          message: 'Attendance untuk hari ini sudah tercatat.',
+          data: existing
+        });
+      }
+
+      const insertR = await client.query(
+        `INSERT INTO student_attendances
+         (student_id, class_id, calendar_id, check_in_time, status, source, updated_by_role, updated_by_teacher_id, change_reason, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'system', NULL, 'Auto create attendance saat login app', NOW(), NOW())
+         RETURNING *`,
+        [student_id, class_id, calendar_id, inTime, status, source]
+      );
+      await client.commit();
+      client.release();
+      return res.status(201).json({ success: true, message: 'Student attendance created (login)', data: insertR.rows[0] });
+    } catch (error) {
+      await client.rollback();
+      client.release();
+      // Jika ada UNIQUE constraint di DB, tangkap ER_DUP_ENTRY sebagai 409 bukan 500
+      if (error.code === 'ER_DUP_ENTRY') {
+        return res.status(409).json({ success: false, already_attended: true, message: 'Attendance untuk hari ini sudah tercatat.' });
+      }
+      console.error('Error in app login attendance:', error);
+      return res.status(500).json({ success: false, message: 'Terjadi kesalahan saat membuat attendance (login)', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
+    }
   } catch (error) {
     console.error('Error in app login attendance:', error);
     return res.status(500).json({ success: false, message: 'Terjadi kesalahan saat membuat attendance (login)', ...(process.env.NODE_ENV === 'development' && { error: error.message }) });
