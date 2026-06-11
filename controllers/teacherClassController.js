@@ -296,29 +296,35 @@ const getClassStudents = async (req, res) => {
         sad.description AS attendance_description,
         sad.approval_status
       FROM students s
-      LEFT JOIN LATERAL (
+      LEFT JOIN (
         SELECT
           sa2.id,
+          sa2.student_id,
           sa2.status,
           sa2.source,
           sa2.check_in_time,
-          sa2.check_out_time
+          sa2.check_out_time,
+          ROW_NUMBER() OVER (
+            PARTITION BY sa2.student_id
+            ORDER BY (sa2.updated_at IS NULL), sa2.updated_at DESC, sa2.id DESC
+          ) AS rn
         FROM student_attendances sa2
         INNER JOIN school_calendar sc2 ON sc2.id = sa2.calendar_id
-        WHERE sa2.student_id = s.id
-          AND sa2.class_id = $1
+        WHERE sa2.class_id = $1
           AND sc2.date = $2::date
-        ORDER BY sa2.updated_at DESC NULLS LAST, sa2.id DESC
-        LIMIT 1
-      ) sa ON TRUE
-      LEFT JOIN LATERAL (
-        SELECT asc2.new_status, asc2.changed_by_type
+      ) sa ON sa.student_id = s.id AND sa.rn = 1
+      LEFT JOIN (
+        SELECT
+          asc2.attendance_id,
+          asc2.new_status,
+          asc2.changed_by_type,
+          ROW_NUMBER() OVER (
+            PARTITION BY asc2.attendance_id
+            ORDER BY asc2.created_at DESC
+          ) AS rn
         FROM attendance_status_changes asc2
-        WHERE asc2.attendance_id = sa.id
-          AND asc2.class_period_id = $3
-        ORDER BY asc2.created_at DESC
-        LIMIT 1
-      ) ascp ON TRUE
+        WHERE asc2.class_period_id = $3
+      ) ascp ON ascp.attendance_id = sa.id AND ascp.rn = 1
       LEFT JOIN student_attendance_details sad ON sad.attendance_id = sa.id
       WHERE s.class_id = $1
       ORDER BY s.name ASC
