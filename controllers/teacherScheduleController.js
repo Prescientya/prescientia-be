@@ -164,10 +164,9 @@ const submitTeacherPeriod = async (req, res) => {
       INSERT INTO submit_teacher_periods
         (teacher_id, class_id, subject_id, period_id, day, photo_url, is_present, submitted_at, created_at, updated_at)
       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW(), NOW())
-      ON CONFLICT (teacher_id, class_id, subject_id, period_id, day)
-      DO UPDATE SET
-        photo_url    = EXCLUDED.photo_url,
-        is_present   = EXCLUDED.is_present,
+      ON DUPLICATE KEY UPDATE
+        photo_url    = VALUES(photo_url),
+        is_present   = VALUES(is_present),
         submitted_at = NOW(),
         updated_at   = NOW()
       RETURNING *

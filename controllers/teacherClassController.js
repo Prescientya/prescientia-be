@@ -1365,13 +1365,12 @@ const updateTeacherAttendanceWithPeriodContext = async (req, res) => {
            NOW(),
            NOW()
          )
-         ON CONFLICT (attendance_id)
-         DO UPDATE SET
-           status = EXCLUDED.status,
-           description = EXCLUDED.description,
-           approval_status = EXCLUDED.approval_status,
-           approved_by = EXCLUDED.approved_by,
-           approved_at = EXCLUDED.approved_at,
+         ON DUPLICATE KEY UPDATE
+           status = VALUES(status),
+           description = VALUES(description),
+           approval_status = VALUES(approval_status),
+           approved_by = VALUES(approved_by),
+           approved_at = VALUES(approved_at),
            updated_at = NOW()
          RETURNING *`,
         [attendanceId, nextStatus, description || null, nextApprovalStatus, approvedBy]
