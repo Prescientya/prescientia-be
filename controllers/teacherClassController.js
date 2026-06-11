@@ -261,7 +261,7 @@ const getClassStudents = async (req, res) => {
             AND stp.subject_id = ts.subject_id
             AND stp.period_id = ts.class_period_id
             AND stp.day = cp.day
-            AND (stp.submitted_at AT TIME ZONE 'Asia/Jakarta')::date = $4::date
+            AND DATE(CONVERT_TZ(stp.submitted_at, '+00:00', '+07:00')) = $4::date
         ) AS is_submitted
       FROM teacher_schedules ts
       INNER JOIN class_periods cp ON cp.id = ts.class_period_id
