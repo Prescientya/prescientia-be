@@ -4,6 +4,40 @@ const pool = require('../config/database');
 const { localDateStr } = require('../utils/dateHelper');
 const { requireStudent, requireTeacher, requireAdmin } = require('../middlewares/auth.middleware');
 
+// BUG FIX timezone: mysql2 decode DATE/DATETIME jadi JS Date di server local time,
+// lalu res.json() serialize sebagai UTC ISO → menggeser tanggal 1 hari di FE WIB.
+// Daftar kolom eksplisit dengan DATE_FORMAT memaksa MySQL return string langsung,
+// sama dengan pola yang sudah dipakai di school_calendar fix.
+const LETTER_COLUMNS = `
+  id, user_type, student_id, teacher_id, class_id, calendar_id,
+  DATE_FORMAT(date, '%Y-%m-%d') AS date,
+  reason, description, status,
+  approved_by_wali,
+  DATE_FORMAT(approved_wali_at, '%Y-%m-%d %H:%i:%s') AS approved_wali_at,
+  approved_by_admin,
+  DATE_FORMAT(approved_admin_at, '%Y-%m-%d %H:%i:%s') AS approved_admin_at,
+  rejected_by, rejected_by_type,
+  DATE_FORMAT(rejected_at, '%Y-%m-%d %H:%i:%s') AS rejected_at,
+  rejection_note,
+  DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
+  DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') AS updated_at
+`;
+// Versi dengan prefiks alias "al." untuk query JOIN.
+const LETTER_COLUMNS_AL = `
+  al.id, al.user_type, al.student_id, al.teacher_id, al.class_id, al.calendar_id,
+  DATE_FORMAT(al.date, '%Y-%m-%d') AS date,
+  al.reason, al.description, al.status,
+  al.approved_by_wali,
+  DATE_FORMAT(al.approved_wali_at, '%Y-%m-%d %H:%i:%s') AS approved_wali_at,
+  al.approved_by_admin,
+  DATE_FORMAT(al.approved_admin_at, '%Y-%m-%d %H:%i:%s') AS approved_admin_at,
+  al.rejected_by, al.rejected_by_type,
+  DATE_FORMAT(al.rejected_at, '%Y-%m-%d %H:%i:%s') AS rejected_at,
+  al.rejection_note,
+  DATE_FORMAT(al.created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
+  DATE_FORMAT(al.updated_at, '%Y-%m-%d %H:%i:%s') AS updated_at
+`;
+
 // ============================================================
 // ABSENCE LETTERS (Surat Izin / Sakit)
 // ============================================================
@@ -150,7 +184,7 @@ router.get('/student/my', requireStudent, async (req, res) => {
     const { student_id } = req.user;
     const { date, status } = req.query;
 
-    let query = `SELECT * FROM absence_letters WHERE student_id = $1`;
+    let query = `SELECT ${LETTER_COLUMNS} FROM absence_letters WHERE student_id = $1`;
     const params = [student_id];
     let idx = 2;
 
@@ -185,7 +219,7 @@ router.get('/teacher/my', requireTeacher, async (req, res) => {
     const { teacher_id } = req.user;
     const { date, status } = req.query;
 
-    let query = `SELECT * FROM absence_letters WHERE teacher_id = $1`;
+    let query = `SELECT ${LETTER_COLUMNS} FROM absence_letters WHERE teacher_id = $1`;
     const params = [teacher_id];
     let idx = 2;
 
@@ -236,7 +270,7 @@ router.get('/pending/class/:class_id', requireTeacher, async (req, res) => {
     }
 
     const result = await pool.query(
-      `SELECT al.*, s.name as student_name, s.nis
+      `SELECT ${LETTER_COLUMNS_AL}, s.name as student_name, s.nis
        FROM absence_letters al
        JOIN students s ON al.student_id = s.id
        WHERE al.class_id = $1 AND al.status = 'pending' AND al.user_type = 'student'
@@ -408,7 +442,7 @@ router.get('/pending/all', requireAdmin, async (req, res) => {
     const { user_type } = req.query;
 
     let query = `
-      SELECT al.*,
+      SELECT ${LETTER_COLUMNS_AL},
         CASE WHEN al.user_type = 'student' THEN s.name ELSE t.name END as name,
         CASE WHEN al.user_type = 'student' THEN s.nis ELSE NULL END as nis,
         CONCAT(COALESCE(c.major, ''), ' ', COALESCE(c.class, '')) as class_name
@@ -445,7 +479,10 @@ router.get('/pending/all', requireAdmin, async (req, res) => {
 router.patch('/approve/admin/:id', requireAdmin, async (req, res) => {
   try {
     const letterId = parseInt(req.params.id);
-    const { admin_id } = req.body;
+    // SECURITY: admin_id wajib diambil dari token yang sudah di-verifikasi oleh
+    // requireAdmin, bukan dari body. Sebelumnya admin valid bisa memalsukan
+    // audit trail dengan mengaku jadi admin lain.
+    const admin_id = req.user.admin_id;
 
     const letter = await pool.query(
       `SELECT * FROM absence_letters WHERE id = $1`,
@@ -559,7 +596,9 @@ router.patch('/approve/admin/:id', requireAdmin, async (req, res) => {
 router.patch('/reject/admin/:id', requireAdmin, async (req, res) => {
   try {
     const letterId = parseInt(req.params.id);
-    const { admin_id, rejection_note } = req.body;
+    // SECURITY: admin_id wajib dari token, bukan body. Lihat catatan di /approve/admin/:id.
+    const admin_id = req.user.admin_id;
+    const { rejection_note } = req.body;
 
     const letter = await pool.query(
       `SELECT * FROM absence_letters WHERE id = $1`,
@@ -630,7 +669,7 @@ router.get('/', requireAdmin, async (req, res) => {
     );
 
     const dataResult = await pool.query(
-      `SELECT al.*,
+      `SELECT ${LETTER_COLUMNS_AL},
         CASE WHEN al.user_type = 'student' THEN s.name ELSE t.name END as name,
         CASE WHEN al.user_type = 'student' THEN s.nis ELSE NULL END as nis,
         CONCAT(COALESCE(c.major, ''), ' ', COALESCE(c.class, '')) as class_name

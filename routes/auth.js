@@ -5,7 +5,7 @@ const pool = require('../config/database');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { authLimiter } = require('../middlewares/rateLimiter');
-const { revokeToken } = require('../utils/tokenBlacklist');
+const { revokeToken, invalidateUserTokensBefore, checkTokenState } = require('../utils/tokenBlacklist');
 
 // Pesan login seragam (mitigasi username enumeration). SEMUA kegagalan
 // kredensial (user tidak ada / password salah / akun nonaktif / role salah)
@@ -162,7 +162,7 @@ router.post('/change-password', authLimiter, async (req, res) => {
     // Verify JWT token
     let decoded;
     try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
+      decoded = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
     } catch (err) {
       return res.status(401).json({ success: false, message: 'Token tidak valid atau sudah kedaluwarsa.' });
     }
@@ -216,6 +216,17 @@ router.post('/change-password', authLimiter, async (req, res) => {
       [hashedNewPassword, decoded.user_id]
     );
 
+    // SECURITY: matikan SEMUA token lama user ini (semua perangkat). Tanpa ini,
+    // token 30 hari yang mungkin sudah bocor tetap valid walau password berubah —
+    // jadi "ganti password setelah akun dibajak" tidak benar-benar mengusir penyerang.
+    try {
+      await invalidateUserTokensBefore(decoded.user_id, Math.floor(Date.now() / 1000));
+    } catch (invErr) {
+      // Jangan gagalkan ganti-password hanya karena Redis hiccup; tapi catat,
+      // karena artinya invalidasi sesi lama belum terjamin sampai Redis pulih.
+      console.error('change-password: gagal set cutoff invalidasi token:', invErr.message);
+    }
+
     res.json({
       success: true,
       message: 'Password berhasil diubah. Silakan login kembali dengan password baru.'
@@ -267,7 +278,7 @@ router.post('/admin/reset-password', authLimiter, async (req, res) => {
     // Verify JWT token (only admin can reset)
     let decoded;
     try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
+      decoded = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
     } catch (err) {
       return res.status(401).json({ success: false, message: 'Token tidak valid atau sudah kedaluwarsa.' });
     }
@@ -318,6 +329,14 @@ router.post('/admin/reset-password', authLimiter, async (req, res) => {
       [hashedPassword, user_id]
     );
 
+    // SECURITY: reset password oleh admin harus mengusir sesi lama user tsb.
+    // (mis. perangkat hilang / akun disalahgunakan) — token lama langsung mati.
+    try {
+      await invalidateUserTokensBefore(user_id, Math.floor(Date.now() / 1000));
+    } catch (invErr) {
+      console.error('admin/reset-password: gagal set cutoff invalidasi token:', invErr.message);
+    }
+
     res.json({
       success: true,
       message: `Password ${user_type} ${userName} telah direset menjadi ${user_type === 'siswa' ? 'NIS' : 'NIP'} mereka. Mereka harus mengubahnya saat login berikutnya.`,
@@ -352,7 +371,7 @@ router.get('/validate-token', async (req, res) => {
 
     let decoded;
     try {
-      decoded = jwt.verify(token, secret);
+      decoded = jwt.verify(token, secret, { algorithms: ['HS256'] });
     } catch (err) {
       if (err.name === 'TokenExpiredError') {
         return res.status(401).json({
@@ -366,6 +385,33 @@ router.get('/validate-token', async (req, res) => {
 
     if (!decoded || !decoded.user_type) {
       return res.status(401).json({ success: false, message: 'Token tidak valid.' });
+    }
+
+    // Konsistensi dengan jalur auth utama (ensureNotRevoked): tolak token yang
+    // sudah di-revoke (logout) atau di-invalidasi (ganti password). Tanpa ini,
+    // app yang startup bisa dapat valid:true padahal request asli berikutnya 401.
+    try {
+      const state = await checkTokenState(decoded);
+      if (!state.ok) {
+        const isRevoked = state.reason === 'token_revoked';
+        return res.status(401).json({
+          success: false,
+          message: isRevoked
+            ? 'Token telah di-revoke. Silakan login kembali.'
+            : 'Sesi tidak berlaku karena password telah diubah. Silakan login kembali.',
+          [state.reason]: true
+        });
+      }
+    } catch (err) {
+      // FAIL-CLOSED selaras dengan middleware (kecuali REVOCATION_FAIL_OPEN).
+      if (String(process.env.REVOCATION_FAIL_OPEN || '').toLowerCase() !== 'true') {
+        console.error('validate-token: Redis error saat cek status token:', err.message);
+        return res.status(503).json({
+          success: false,
+          message: 'Layanan autentikasi sedang tidak tersedia. Coba lagi sebentar lagi.'
+        });
+      }
+      console.error('validate-token: Redis error, FAIL-OPEN (token diloloskan):', err.message);
     }
 
     // Hitung sisa hari sebelum token expire (untuk peringatan sesi di app)
@@ -998,7 +1044,9 @@ router.post('/login/admin', authLimiter, async (req, res) => {
         );
       }
       
-      return res.status(403).json({
+      // Status 401 (bukan 403) untuk konsisten dengan flow login siswa/guru;
+      // mencegah enumeration via perbedaan status code.
+      return res.status(401).json({
         success: false,
         message: 'mohon maaf untuk akun yang anda loginkan sudah pernah login di device yang berbeda sebelumnya. Pengajuan pergantian perangkat sudah dibuat, mohon tunggu konfirmasi.',
         device_change_pending: true
@@ -1072,7 +1120,7 @@ router.post('/logout', authLimiter, async (req, res) => {
     let decoded = null;
     try {
       // Verify dengan ignoreExpiration agar token expired pun bisa dilogout.
-      decoded = jwt.verify(token, process.env.JWT_SECRET, { ignoreExpiration: true });
+      decoded = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'], ignoreExpiration: true });
     } catch (_) {
       // Token rusak / signature salah → tidak ada yang bisa di-revoke, anggap sukses.
       return res.json({ success: true, message: 'Logout selesai.' });
@@ -1082,7 +1130,19 @@ router.post('/logout', authLimiter, async (req, res) => {
       const ttl = decoded.exp
         ? Math.max(1, Math.floor(decoded.exp - Date.now() / 1000))
         : 60 * 60 * 24 * 30; // fallback 30 hari (sesuai max lifetime token)
-      await revokeToken(decoded.jti, ttl);
+      try {
+        await revokeToken(decoded.jti, ttl);
+      } catch (revErr) {
+        // SECURITY: revoke gagal (mis. Redis down). JANGAN balas "logout berhasil"
+        // — token masih hidup. 503 (retryable) supaya klien tahu dan bisa coba
+        // lagi; klien tetap sebaiknya menghapus token lokal sebagai lapis kedua.
+        console.error('logout: gagal revoke token:', revErr.message);
+        return res.status(503).json({
+          success: false,
+          message: 'Logout belum tuntas di server. Coba lagi sebentar lagi.',
+          revoke_failed: true
+        });
+      }
     }
 
     return res.json({ success: true, message: 'Logout berhasil.' });

@@ -86,6 +86,44 @@ function normaliseRows(rows) {
   });
 }
 
+// Konversi setiap field JS Date ke string lokal "YYYY-MM-DD" (kalau midnight) atau
+// "YYYY-MM-DD HH:MM:SS" — mencegah timezone shift saat res.json() men-serialize
+// Date jadi UTC ISO. Khusus dipakai untuk path RETURNING * (auto SELECT * yang
+// di-trigger wrapper), di mana kita tidak bisa pasang DATE_FORMAT di SQL.
+//
+// Untuk SELECT biasa, gunakan DATE_FORMAT(...) langsung di query — itu lebih
+// eksplisit dan tidak bergantung pada perilaku Date di JS runtime.
+function localizeDateFields(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return rows;
+  return rows.map(row => {
+    if (!row || typeof row !== 'object') return row;
+    const copy = {};
+    for (const key in row) {
+      const val = row[key];
+      if (val instanceof Date && !isNaN(val.getTime())) {
+        const y = val.getFullYear();
+        const m = String(val.getMonth() + 1).padStart(2, '0');
+        const d = String(val.getDate()).padStart(2, '0');
+        const hh = String(val.getHours()).padStart(2, '0');
+        const mm = String(val.getMinutes()).padStart(2, '0');
+        const ss = String(val.getSeconds()).padStart(2, '0');
+        // Heuristik: midnight → kolom DATE (return YYYY-MM-DD saja); selain itu
+        // DATETIME/TIMESTAMP (return full). Edge case: DATETIME yang kebetulan
+        // jam 00:00:00 akan ditampilkan sebagai DATE-only. Untuk schema saat ini,
+        // hal itu tidak mengganggu konsumsi FE.
+        if (hh === '00' && mm === '00' && ss === '00') {
+          copy[key] = `${y}-${m}-${d}`;
+        } else {
+          copy[key] = `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
+        }
+      } else {
+        copy[key] = val;
+      }
+    }
+    return copy;
+  });
+}
+
 function wrapResult(rows) {
   if (Array.isArray(rows)) {
     const normalised = normaliseRows(rows);
@@ -119,7 +157,9 @@ async function runQuery(queryFn, text, params) {
   if (insertMatch && result.insertId != null) {
     const table = insertMatch[1];
     const [sel] = await queryFn(`SELECT * FROM \`${table}\` WHERE id = ? LIMIT 1`, [result.insertId]);
-    result.rows     = Array.isArray(sel) ? sel : [];
+    // BUG FIX timezone: SELECT * di sini auto-generate, tidak bisa pakai DATE_FORMAT
+    // di SQL → localize JS Date di JS supaya tidak di-serialize sebagai UTC ISO.
+    result.rows     = Array.isArray(sel) ? localizeDateFields(sel) : [];
     result.rowCount = result.rows.length;
     return result;
   }
@@ -132,7 +172,8 @@ async function runQuery(queryFn, text, params) {
     const maxSetN   = setNums.length ? Math.max(...setNums) : 0;
     const whereParams = cleanParams.slice(maxSetN);
     const [sel] = await queryFn(`SELECT * FROM \`${table}\` ${pgToMySQL(wherePart)}`, whereParams);
-    result.rows     = Array.isArray(sel) ? sel : [];
+    // Sama dengan path INSERT di atas — SELECT * auto-generate, perlu localize Date.
+    result.rows     = Array.isArray(sel) ? localizeDateFields(sel) : [];
     result.rowCount = result.rows.length;
     return result;
   }

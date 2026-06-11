@@ -16,12 +16,29 @@ function normalizeSource(value, fallback = 'digital_wifi') {
 // ==================== STUDENT ATTENDANCES CRUD ====================
 
 // GET recap/summary student attendance by student_id
+// IDOR guard: middleware sudah membatasi ke role student; pastikan student
+// hanya bisa lihat rekap dirinya sendiri (cross-check params vs JWT claim).
 router.get('/recap/:student_id', requireStudent, async (req, res) => {
   try {
     const { student_id } = req.params;
 
     if (!student_id) {
       return res.status(400).json({ success: false, message: 'Student ID harus diisi' });
+    }
+
+    const parsedParamId = parseInt(student_id, 10);
+    const tokenStudentId = parseInt(req.user && req.user.student_id, 10);
+
+    if (!parsedParamId || isNaN(parsedParamId) || parsedParamId <= 0) {
+      return res.status(400).json({ success: false, message: 'Student ID tidak valid' });
+    }
+
+    if (!tokenStudentId || isNaN(tokenStudentId) || tokenStudentId <= 0) {
+      return res.status(401).json({ success: false, message: 'Token tidak mengandung student_id yang valid' });
+    }
+
+    if (parsedParamId !== tokenStudentId) {
+      return res.status(403).json({ success: false, message: 'Akses ditolak: student_id tidak sesuai dengan token' });
     }
 
     const query = `
@@ -38,7 +55,7 @@ router.get('/recap/:student_id', requireStudent, async (req, res) => {
       ORDER BY COALESCE(DATE(sc.date), DATE(sa.check_in_time), DATE(sa.created_at)) ASC
     `;
 
-    const result = await pool.query(query, [student_id]);
+    const result = await pool.query(query, [parsedParamId]);
 
     const formatter = new Intl.DateTimeFormat('id-ID', { weekday: 'long' });
     const formatTime = (ts) => {

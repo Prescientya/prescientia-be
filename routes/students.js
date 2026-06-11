@@ -4,6 +4,78 @@ const pool = require('../config/database');
 const bcrypt = require('bcrypt');
 const { requireStudent, requireAdmin } = require('../middlewares/auth.middleware');
 
+// Whitelist field yang boleh diubah siswa sendiri (self-service).
+// SECURITY: identitas resmi (name, nis, gender, date_of_birth, class_id) sengaja
+// TIDAK ada di sini — hanya admin yang boleh mengubahnya.
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Validasi field nullable bertipe string dengan batas panjang (sesuai kolom DB).
+// Mengembalikan true bila INVALID. null diperbolehkan (untuk mengosongkan field);
+// tipe selain string ditolak agar tidak bocor jadi error DB (500) di hilir.
+function invalidNullableString(val, max) {
+  // undefined = field tidak dikirim (tak diubah) → valid; null = sengaja dikosongkan → valid.
+  // Tanpa cek undefined, PATCH parsial (mis. ubah email saja) salah ditolak 400.
+  if (val === undefined || val === null) return false;
+  if (typeof val !== 'string') return true;
+  return val.length > max;
+}
+
+// Ambil profil siswa lengkap (user + student + class) dalam bentuk yang sama
+// dengan response GET /profile, agar bisa dipakai ulang oleh PATCH /profile.
+async function fetchStudentProfile(studentId) {
+  const result = await pool.query(
+    `SELECT
+        s.id as student_id, s.user_id, s.nis, s.name, s.gender, s.date_of_birth,
+        s.phone_number, s.address, s.class_id as student_class_id, s.photo_profile,
+        s.created_at as student_created_at, s.updated_at as student_updated_at,
+        u.email, u.email_verified_at, u.device_id, u.is_active, u.last_login_at,
+        u.created_at as user_created_at, u.updated_at as user_updated_at,
+        c.id as class_id, c.class as class_level, c.major as class_major
+     FROM students s
+     INNER JOIN users u ON s.user_id = u.id
+     LEFT JOIN classes c ON s.class_id = c.id
+     WHERE s.id = $1`,
+    [studentId]
+  );
+
+  if (result.rows.length === 0) return null;
+  const profile = result.rows[0];
+
+  return {
+    user: {
+      id: profile.user_id,
+      email: profile.email,
+      email_verified_at: profile.email_verified_at,
+      device_id: profile.device_id,
+      is_active: profile.is_active,
+      last_login_at: profile.last_login_at,
+      created_at: profile.user_created_at,
+      updated_at: profile.user_updated_at
+    },
+    student: {
+      id: profile.student_id,
+      nis: profile.nis,
+      name: profile.name,
+      gender: profile.gender,
+      date_of_birth: profile.date_of_birth,
+      phone_number: profile.phone_number,
+      address: profile.address,
+      photo_profile: profile.photo_profile,
+      created_at: profile.student_created_at,
+      updated_at: profile.student_updated_at
+    },
+    class: profile.class_id ? {
+      id: profile.class_id,
+      level: profile.class_level,
+      major: profile.class_major
+    } : (profile.student_class_id ? {
+      id: profile.student_class_id,
+      level: profile.class_level,
+      major: profile.class_major
+    } : null)
+  };
+}
+
 // ==================== STUDENTS CRUD ====================
 
 // GET all students
@@ -179,6 +251,132 @@ router.get('/profile', requireStudent, async (req, res) => {
       success: false,
       message: 'Terjadi kesalahan saat mengambil data profil student',
       ...(process.env.NODE_ENV === 'development' && { ...(process.env.NODE_ENV === 'development' && { error: error.message }) })
+    });
+  }
+});
+
+// PATCH self-service profile (siswa mengubah data kontaknya sendiri)
+// HARUS DIDEFINISIKAN SEBELUM route PATCH '/:id' (admin) — karena '/:id' tidak
+// punya constraint angka, kata 'profile' akan tertangkap sebagai :id bila urutannya salah.
+// SECURITY: identitas diambil dari token (req.user), BUKAN dari body → cegah IDOR.
+// Hanya field whitelist (email, phone_number, address, photo_profile) yang diproses;
+// field lain (name, nis, gender, date_of_birth, class_id) sengaja diabaikan → cegah mass-assignment.
+router.patch('/profile', requireStudent, async (req, res) => {
+  const studentId = req.user.student_id;
+  const userId = req.user.user_id;
+
+  // Whitelist eksplisit. Field di luar ini diabaikan total.
+  const { email, phone_number, address, photo_profile } = req.body;
+
+  // Validasi email (bila dikirim): whitelist bentuk, bukan blacklist.
+  // NOTE: sengaja hanya trim(), TANPA lowercase — sistem ini case-sensitive untuk
+  // email (admin login pakai COLLATE "C", lihat auth.js). Jangan diubah jadi lowercase.
+  const emailProvided = email !== undefined;
+  let normalizedEmail;
+  if (emailProvided) {
+    normalizedEmail = typeof email === 'string' ? email.trim() : '';
+    if (!normalizedEmail || normalizedEmail.length > 100 || !EMAIL_REGEX.test(normalizedEmail)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Format email tidak valid'
+      });
+    }
+  }
+
+  // Validasi tipe & panjang field kontak di boundary (cegah error DB bocor jadi 500).
+  if (invalidNullableString(phone_number, 20)) {
+    return res.status(400).json({ success: false, message: 'Nomor telepon harus berupa teks maksimal 20 karakter' });
+  }
+  if (invalidNullableString(address, 1000)) {
+    return res.status(400).json({ success: false, message: 'Alamat harus berupa teks maksimal 1000 karakter' });
+  }
+  if (invalidNullableString(photo_profile, 255)) {
+    return res.status(400).json({ success: false, message: 'Foto profil harus berupa teks maksimal 255 karakter' });
+  }
+
+  // Bangun update dinamis untuk kolom kontak di tabel students.
+  // phone_number/address/photo_profile pakai cek !== undefined agar bisa dikosongkan (null).
+  const studentSets = [];
+  const studentParams = [];
+  let idx = 1;
+  if (phone_number !== undefined) { studentSets.push(`phone_number = $${idx++}`); studentParams.push(phone_number); }
+  if (address !== undefined)      { studentSets.push(`address = $${idx++}`);      studentParams.push(address); }
+  if (photo_profile !== undefined){ studentSets.push(`photo_profile = $${idx++}`);studentParams.push(photo_profile); }
+
+  if (studentSets.length === 0 && !emailProvided) {
+    return res.status(400).json({
+      success: false,
+      message: 'Tidak ada field yang diubah'
+    });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    if (emailProvided) {
+      // Keunikan email terhadap user lain (email UNIQUE di tabel users).
+      const checkEmail = await client.query(
+        'SELECT id FROM users WHERE email = $1 AND id != $2',
+        [normalizedEmail, userId]
+      );
+      if (checkEmail.rows.length > 0) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          success: false,
+          message: 'Email sudah digunakan akun lain'
+        });
+      }
+      // email_verified_at direset NULL: email baru belum terverifikasi.
+      await client.query(
+        'UPDATE users SET email = $1, email_verified_at = NULL, updated_at = NOW() WHERE id = $2',
+        [normalizedEmail, userId]
+      );
+    }
+
+    if (studentSets.length > 0) {
+      studentParams.push(studentId);
+      await client.query(
+        `UPDATE students SET ${studentSets.join(', ')}, updated_at = NOW() WHERE id = $${idx}`,
+        studentParams
+      );
+    }
+
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    // Race: cek-lalu-update email tidak atomik. Penjaga akhir adalah UNIQUE
+    // constraint DB (unique_violation 23505) → petakan ke 409, bukan 500.
+    if (error.code === '23505') {
+      return res.status(409).json({
+        success: false,
+        message: 'Email sudah digunakan akun lain'
+      });
+    }
+    console.error('Error updating student self-profile:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Terjadi kesalahan saat memperbarui profil',
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
+    });
+  } finally {
+    client.release();
+  }
+
+  // Kembalikan profil terbaru (bentuk sama dengan GET /profile) agar FE bisa refresh.
+  try {
+    const data = await fetchStudentProfile(studentId);
+    return res.json({
+      success: true,
+      message: 'Profil berhasil diperbarui',
+      data
+    });
+  } catch (error) {
+    // Update sudah commit; gagal hanya saat re-fetch tampilan.
+    console.error('Error fetching student profile after update:', error);
+    return res.json({
+      success: true,
+      message: 'Profil berhasil diperbarui'
     });
   }
 });

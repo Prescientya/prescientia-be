@@ -1,18 +1,29 @@
 ﻿const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
-const { requireAuth, requireAdmin } = require('../middlewares/auth.middleware');
+const { requireAdmin } = require('../middlewares/auth.middleware');
+
+// SECURITY: seluruh endpoint dikunci ke admin (requireAdmin).
+// Sebelumnya pakai requireAuth → siswa/guru mana pun yang login bisa
+// meng-approve izin/sakit siswa lain (PATCH), membaca bukti & alasan absen
+// semua siswa (GET), dan menyisipkan detail untuk absensi mana pun (POST) —
+// broken object-level authorization yang mem-bypass persetujuan wali kelas.
+// Endpoint ini tidak dipanggil app siswa/guru, jadi pengetatan ini aman.
 
 // GET all attendance details
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAdmin, async (req, res) => {
   try {
     const { page = 1, limit = 10, attendance_id, student_id } = req.query;
     const offset = (page - 1) * limit;
 
+    // BUG FIX timezone: kolom DATETIME diformat eksplisit jadi string agar tidak
+    // di-serialize sebagai UTC ISO yang menggeser jam/tanggal di FE.
     let query = `
       SELECT ad.id, ad.attendance_id, sa.student_id, ad.status, ad.description as reason,
-             ad.evidence_url, ad.approved_by, ad.approved_at,
-             ad.created_at, ad.updated_at,
+             ad.evidence_url, ad.approved_by,
+             DATE_FORMAT(ad.approved_at, '%Y-%m-%d %H:%i:%s') AS approved_at,
+             DATE_FORMAT(ad.created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
+             DATE_FORMAT(ad.updated_at, '%Y-%m-%d %H:%i:%s') AS updated_at,
              s.name as student_name, s.nis
       FROM student_attendance_details ad
       LEFT JOIN student_attendances sa ON ad.attendance_id = sa.id
@@ -51,13 +62,15 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // GET attendance detail by ID
-router.get('/:id', requireAuth, async (req, res) => {
+router.get('/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query(
       `SELECT ad.id, ad.attendance_id, sa.student_id, ad.status, ad.description as reason,
-              ad.evidence_url, ad.approved_by, ad.approved_at,
-              ad.created_at, ad.updated_at,
+              ad.evidence_url, ad.approved_by,
+              DATE_FORMAT(ad.approved_at, '%Y-%m-%d %H:%i:%s') AS approved_at,
+              DATE_FORMAT(ad.created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
+              DATE_FORMAT(ad.updated_at, '%Y-%m-%d %H:%i:%s') AS updated_at,
               s.name as student_name, s.nis
        FROM student_attendance_details ad
        LEFT JOIN student_attendances sa ON ad.attendance_id = sa.id
@@ -78,7 +91,7 @@ router.get('/:id', requireAuth, async (req, res) => {
 });
 
 // POST create attendance detail
-router.post('/', requireAuth, async (req, res) => {
+router.post('/', requireAdmin, async (req, res) => {
   try {
     const { attendance_id, student_id, status, reason, evidence_url } = req.body;
 
@@ -100,7 +113,7 @@ router.post('/', requireAuth, async (req, res) => {
 });
 
 // PATCH update attendance detail (approve/reject)
-router.patch('/:id', requireAuth, async (req, res) => {
+router.patch('/:id', requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { status, approved_by } = req.body;

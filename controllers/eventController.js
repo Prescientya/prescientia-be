@@ -35,12 +35,17 @@ async function getEvents(req, res) {
     const params = [];
     let paramIndex = 1;
 
+    // BUG FIX timezone: kolom DATE/DATETIME diformat eksplisit jadi string supaya
+    // tidak di-decode mysql2 → JS Date → UTC ISO yang menggeser tanggal 1 hari.
     if (isTeacher) {
       // Teachers see events targeted at 'semua' or 'guru'
       query = `
         SELECT DISTINCT e.id, e.title, e.description, e.link,
-               e.release_date, e.end_date, e.target_audience,
-               e.created_at, e.updated_at
+               DATE_FORMAT(e.release_date, '%Y-%m-%d') AS release_date,
+               DATE_FORMAT(e.end_date, '%Y-%m-%d') AS end_date,
+               e.target_audience,
+               DATE_FORMAT(e.created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
+               DATE_FORMAT(e.updated_at, '%Y-%m-%d %H:%i:%s') AS updated_at
         FROM events e
         WHERE e.target_audience IN ('semua', 'guru')
       `;
@@ -51,8 +56,11 @@ async function getEvents(req, res) {
 
       query = `
         SELECT DISTINCT e.id, e.title, e.description, e.link,
-               e.release_date, e.end_date, e.target_audience,
-               e.created_at, e.updated_at
+               DATE_FORMAT(e.release_date, '%Y-%m-%d') AS release_date,
+               DATE_FORMAT(e.end_date, '%Y-%m-%d') AS end_date,
+               e.target_audience,
+               DATE_FORMAT(e.created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
+               DATE_FORMAT(e.updated_at, '%Y-%m-%d %H:%i:%s') AS updated_at
         FROM events e
         LEFT JOIN event_targets et ON et.event_id = e.id
         LEFT JOIN classes c ON c.id = $${paramIndex}
@@ -171,8 +179,12 @@ async function getEventDetail(req, res) {
     const { id } = req.params;
 
     const eventResult = await pool.query(
-      `SELECT id, title, description, link, release_date, end_date,
-              target_audience, created_at, updated_at
+      `SELECT id, title, description, link,
+              DATE_FORMAT(release_date, '%Y-%m-%d') AS release_date,
+              DATE_FORMAT(end_date, '%Y-%m-%d') AS end_date,
+              target_audience,
+              DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
+              DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s') AS updated_at
        FROM events WHERE id = $1`,
       [id]
     );
@@ -239,13 +251,17 @@ async function getEventDetail(req, res) {
 
 /**
  * Helper: determine event status from dates.
+ *
+ * Setelah BUG FIX timezone, releaseDate & endDate sudah berupa string "YYYY-MM-DD"
+ * dari DATE_FORMAT di SQL. Bandingkan langsung sebagai string — comparison
+ * lexicographic untuk format ISO ekuivalen dengan comparison chronological,
+ * sehingga tidak perlu lagi membungkus dengan new Date()+localDateStr() yang
+ * sebelumnya rentan timezone shift.
  */
 function _getEventStatus(releaseDate, endDate, today) {
-  const release = localDateStr(new Date(releaseDate));
-  const end = localDateStr(new Date(endDate));
-
-  if (today < release) return 'terjadwal';
-  if (today > end) return 'selesai';
+  if (!releaseDate || !endDate) return 'aktif';
+  if (today < releaseDate) return 'terjadwal';
+  if (today > endDate) return 'selesai';
   return 'aktif';
 }
 

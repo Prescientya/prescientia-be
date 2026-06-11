@@ -1,22 +1,57 @@
 const jwt = require('jsonwebtoken');
-const { isTokenRevoked } = require('../utils/tokenBlacklist');
+const { checkTokenState } = require('../utils/tokenBlacklist');
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
-// Cek apakah token sudah di-revoke via Redis blacklist.
-// Token lama (issued sebelum patch ini) tidak punya `jti` → diperlakukan valid
-// untuk backward compatibility. Mengembalikan boolean (true bila valid/lanjut).
+// SECURITY: whitelist algorithm eksplisit. Mencegah algorithm-confusion attack
+// dan menutup jalur `alg: none` jika ada celah di versi library.
+const JWT_VERIFY_OPTIONS = { algorithms: ['HS256'] };
+
+// Perilaku saat Redis (sumber kebenaran revocation) tak terjangkau.
+// Default FAIL-CLOSED: tolak token (503) — token 30 hari membuat blacklist
+// satu-satunya tombol kill, jadi fail-open akan melumpuhkan revocation total.
+// Set REVOCATION_FAIL_OPEN=true HANYA bila availability lebih diprioritaskan
+// daripada jaminan revocation saat Redis down (keputusan sadar).
+const REVOCATION_FAIL_OPEN = String(process.env.REVOCATION_FAIL_OPEN || '').toLowerCase() === 'true';
+
+// Validasi status token terhadap Redis (blacklist jti + cutoff password) lewat
+// helper bersama `checkTokenState`, lalu petakan ke response HTTP + terapkan
+// kebijakan fail-open/closed. Mengembalikan boolean (true bila valid/lanjut);
+// bila false, response sudah dikirim.
 async function ensureNotRevoked(decoded, res) {
-  if (!decoded || !decoded.jti) return true; // token lama: lewati cek
-  const revoked = await isTokenRevoked(decoded.jti);
-  if (revoked) {
-    res.status(401).json({
+  if (!decoded) return true;
+
+  let state;
+  try {
+    state = await checkTokenState(decoded);
+  } catch (err) {
+    // Redis tak terjangkau. FAIL-CLOSED (default): tolak agar token yang mungkin
+    // sudah di-revoke tidak lolos. 503 (retryable), bukan 401, supaya klien tahu
+    // ini gangguan sementara — bukan kredensial salah.
+    if (REVOCATION_FAIL_OPEN) {
+      console.error('ensureNotRevoked: Redis error, FAIL-OPEN (token diloloskan):', err.message);
+      return true;
+    }
+    console.error('ensureNotRevoked: Redis error, FAIL-CLOSED (token ditolak):', err.message);
+    res.status(503).json({
       success: false,
-      message: 'Token telah di-revoke. Silakan login kembali.',
-      token_revoked: true
+      message: 'Layanan autentikasi sedang tidak tersedia. Coba lagi sebentar lagi.'
     });
     return false;
   }
+
+  if (!state.ok) {
+    const isRevoked = state.reason === 'token_revoked';
+    res.status(401).json({
+      success: false,
+      message: isRevoked
+        ? 'Token telah di-revoke. Silakan login kembali.'
+        : 'Sesi tidak berlaku karena password telah diubah. Silakan login kembali.',
+      [state.reason]: true
+    });
+    return false;
+  }
+
   return true;
 }
 
@@ -54,7 +89,7 @@ function requireStudent(req, res, next) {
       return res.status(401).json({ success: false, message: 'Token tidak ditemukan. Silakan login.' });
     }
 
-    jwt.verify(token, JWT_SECRET, async (err, decoded) => {
+    jwt.verify(token, JWT_SECRET, JWT_VERIFY_OPTIONS, async (err, decoded) => {
       if (err) {
         if (err.name === 'TokenExpiredError') {
           return res.status(401).json({
@@ -140,7 +175,7 @@ function requireTeacher(req, res, next) {
       return res.status(401).json({ success: false, message: 'Token tidak ditemukan. Silakan login.' });
     }
 
-    jwt.verify(token, JWT_SECRET, async (err, decoded) => {
+    jwt.verify(token, JWT_SECRET, JWT_VERIFY_OPTIONS, async (err, decoded) => {
       if (err) {
         if (err.name === 'TokenExpiredError') {
           return res.status(401).json({
@@ -199,7 +234,7 @@ function requireAdmin(req, res, next) {
       return res.status(401).json({ success: false, message: 'Token tidak ditemukan. Silakan login.' });
     }
 
-    jwt.verify(token, JWT_SECRET, async (err, decoded) => {
+    jwt.verify(token, JWT_SECRET, JWT_VERIFY_OPTIONS, async (err, decoded) => {
       if (err) {
         if (err.name === 'TokenExpiredError') {
           return res.status(401).json({ success: false, message: 'Token kadaluwarsa. Silakan login kembali.' });
@@ -236,7 +271,7 @@ function requireStudentOrTeacher(req, res, next) {
       return res.status(401).json({ success: false, message: 'Token tidak ditemukan. Silakan login.' });
     }
 
-    jwt.verify(token, JWT_SECRET, async (err, decoded) => {
+    jwt.verify(token, JWT_SECRET, JWT_VERIFY_OPTIONS, async (err, decoded) => {
       if (err) {
         if (err.name === 'TokenExpiredError') {
           return res.status(401).json({
@@ -292,7 +327,7 @@ function requireAuth(req, res, next) {
       return res.status(401).json({ success: false, message: 'Token tidak ditemukan. Silakan login.' });
     }
 
-    jwt.verify(token, JWT_SECRET, async (err, decoded) => {
+    jwt.verify(token, JWT_SECRET, JWT_VERIFY_OPTIONS, async (err, decoded) => {
       if (err) {
         if (err.name === 'TokenExpiredError') {
           return res.status(401).json({

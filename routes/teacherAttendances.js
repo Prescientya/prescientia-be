@@ -21,11 +21,19 @@ router.get('/', requireAdmin, async (req, res) => {
     const { page = 1, limit = 10, teacher_id, status } = req.query;
     const offset = (page - 1) * limit;
 
+    // SECURITY/BUG: kolom DATE/DATETIME diformat eksplisit ke string YYYY-MM-DD[ HH:MM:SS]
+    // agar mysql2 tidak mengubahnya jadi JS Date object (yang akan di-serialize sebagai
+    // UTC ISO oleh res.json → menggeser tanggal 1 hari di FE WIB). Pola sama dengan
+    // school_calendar fix.
     let query = `
-      SELECT ta.id, ta.teacher_id, ta.calendar_id, ta.check_in_time, ta.check_out_time,
-             ta.status, ta.source, ta.created_at, ta.updated_at,
+      SELECT ta.id, ta.teacher_id, ta.calendar_id,
+             DATE_FORMAT(ta.check_in_time, '%Y-%m-%d %H:%i:%s') AS check_in_time,
+             DATE_FORMAT(ta.check_out_time, '%Y-%m-%d %H:%i:%s') AS check_out_time,
+             ta.status, ta.source,
+             DATE_FORMAT(ta.created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
+             DATE_FORMAT(ta.updated_at, '%Y-%m-%d %H:%i:%s') AS updated_at,
              t.name as teacher_name, t.nip,
-             sc.date as calendar_date
+             DATE_FORMAT(sc.date, '%Y-%m-%d') AS calendar_date
       FROM teacher_attendances ta
       LEFT JOIN teachers t ON ta.teacher_id = t.id
       LEFT JOIN school_calendar sc ON ta.calendar_id = sc.id
@@ -70,8 +78,12 @@ router.get('/my', requireTeacher, async (req, res) => {
     const today = localDateStr(new Date());
 
     const query = `
-      SELECT ta.id, ta.teacher_id, ta.calendar_id, ta.check_in_time, ta.check_out_time,
-             ta.status, ta.source, ta.created_at, ta.updated_at
+      SELECT ta.id, ta.teacher_id, ta.calendar_id,
+             DATE_FORMAT(ta.check_in_time, '%Y-%m-%d %H:%i:%s') AS check_in_time,
+             DATE_FORMAT(ta.check_out_time, '%Y-%m-%d %H:%i:%s') AS check_out_time,
+             ta.status, ta.source,
+             DATE_FORMAT(ta.created_at, '%Y-%m-%d %H:%i:%s') AS created_at,
+             DATE_FORMAT(ta.updated_at, '%Y-%m-%d %H:%i:%s') AS updated_at
       FROM teacher_attendances ta
       LEFT JOIN school_calendar sc ON ta.calendar_id = sc.id
       WHERE ta.teacher_id = $1
@@ -100,8 +112,11 @@ router.get('/recap/:teacherId', requireTeacher, async (req, res) => {
     const query = `
       SELECT
         ta.id, ta.teacher_id, ta.calendar_id, ta.status,
-        ta.check_in_time, ta.check_out_time, ta.source,
-        sc.date as calendar_date, sc.status as calendar_status
+        DATE_FORMAT(ta.check_in_time, '%Y-%m-%d %H:%i:%s') AS check_in_time,
+        DATE_FORMAT(ta.check_out_time, '%Y-%m-%d %H:%i:%s') AS check_out_time,
+        ta.source,
+        DATE_FORMAT(sc.date, '%Y-%m-%d') AS calendar_date,
+        sc.status as calendar_status
       FROM teacher_attendances ta
       LEFT JOIN school_calendar sc ON ta.calendar_id = sc.id
       WHERE ta.teacher_id = $1
@@ -115,12 +130,17 @@ router.get('/recap/:teacherId', requireTeacher, async (req, res) => {
     const toDateString = (val) => {
       if (!val) return null;
       if (val instanceof Date) return localDateStr(val);
-      return String(val).split('T')[0];
+      // val sekarang biasanya string "YYYY-MM-DD" (calendar_date) atau
+      // "YYYY-MM-DD HH:MM:SS" (check_in_time) — pisahkan di T atau spasi.
+      return String(val).split(/[T ]/)[0];
     };
 
     const formatTime = (ts) => {
       if (!ts) return '';
-      const d = new Date(ts);
+      // Normalisasi "YYYY-MM-DD HH:MM:SS" → "YYYY-MM-DDTHH:MM:SS" agar Date parser
+      // memperlakukannya sebagai local time secara konsisten lintas runtime.
+      const normalized = typeof ts === 'string' ? ts.replace(' ', 'T') : ts;
+      const d = new Date(normalized);
       if (isNaN(d.getTime())) return '';
       return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
     };

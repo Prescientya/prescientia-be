@@ -7,6 +7,66 @@ const { requireTeacherClassScheduleAccess, requireHomeroomClassAccess } = requir
 const teacherScheduleController = require('../controllers/teacherScheduleController');
 const teacherClassController = require('../controllers/teacherClassController');
 
+// SECURITY: field identitas resmi (name, nip, gender, date_of_birth) dan penugasan
+// (department, jadwal, mapel) TIDAK boleh diubah guru sendiri — hanya admin.
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Validasi field nullable bertipe string dengan batas panjang (sesuai kolom DB).
+// true bila INVALID. null diperbolehkan (mengosongkan field); tipe selain string
+// ditolak agar tidak bocor jadi error DB (500) di hilir.
+function invalidNullableString(val, max) {
+  // undefined = field tidak dikirim (tak diubah) → valid; null = sengaja dikosongkan → valid.
+  // Tanpa cek undefined, PATCH parsial (mis. ubah email saja) salah ditolak 400.
+  if (val === undefined || val === null) return false;
+  if (typeof val !== 'string') return true;
+  return val.length > max;
+}
+
+// Ambil profil guru lengkap (user + teacher), dipakai ulang oleh GET & PATCH /profile.
+async function fetchTeacherProfile(teacherId) {
+  const result = await pool.query(
+    `SELECT
+        t.id as teacher_id, t.user_id, t.nip, t.name, t.gender, t.date_of_birth,
+        t.phone_number, t.address, t.department, t.photo_profile,
+        t.created_at as teacher_created_at, t.updated_at as teacher_updated_at,
+        u.email, u.email_verified_at, u.device_id, u.is_active, u.last_login_at,
+        u.created_at as user_created_at, u.updated_at as user_updated_at
+     FROM teachers t
+     INNER JOIN users u ON t.user_id = u.id
+     WHERE t.id = $1`,
+    [teacherId]
+  );
+
+  if (result.rows.length === 0) return null;
+  const profile = result.rows[0];
+
+  return {
+    user: {
+      id: profile.user_id,
+      email: profile.email,
+      email_verified_at: profile.email_verified_at,
+      device_id: profile.device_id,
+      is_active: profile.is_active,
+      last_login_at: profile.last_login_at,
+      created_at: profile.user_created_at,
+      updated_at: profile.user_updated_at
+    },
+    teacher: {
+      id: profile.teacher_id,
+      nip: profile.nip,
+      name: profile.name,
+      gender: profile.gender,
+      date_of_birth: profile.date_of_birth,
+      phone_number: profile.phone_number,
+      address: profile.address,
+      department: profile.department,
+      photo_profile: profile.photo_profile,
+      created_at: profile.teacher_created_at,
+      updated_at: profile.teacher_updated_at
+    }
+  };
+}
+
 // ==================== TEACHER SCHEDULE ENDPOINTS ====================
 
 // POST submit teaching evidence for a specific period today (UPSERT)
@@ -57,6 +117,146 @@ router.post('/homeroom/attendance/:detailId/approve', requireTeacher, teacherCla
 router.post('/homeroom/attendance/:detailId/reject', requireTeacher, teacherClassController.rejectAttendance);
 
 // ==================== TEACHERS CRUD ====================
+
+// GET self-service profile (guru melihat profilnya sendiri dari token JWT).
+// Berguna agar app bisa refetch profil terbaru setelah PATCH /profile.
+router.get('/profile', requireTeacher, async (req, res) => {
+  try {
+    const data = await fetchTeacherProfile(req.user.teacher_id);
+    if (!data) {
+      return res.status(404).json({ success: false, message: 'Profil guru tidak ditemukan' });
+    }
+    res.json({
+      success: true,
+      message: 'Data profil guru berhasil diambil',
+      data
+    });
+  } catch (error) {
+    console.error('Error fetching teacher profile:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Terjadi kesalahan saat mengambil data profil guru',
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
+    });
+  }
+});
+
+// PATCH self-service profile (guru mengubah data kontaknya sendiri).
+// SECURITY: identitas diambil dari token (req.user.teacher_id), BUKAN dari body → cegah IDOR.
+// Hanya field whitelist (email, phone_number, address, photo_profile) yang diproses;
+// field lain (name, nip, gender, date_of_birth, department) sengaja diabaikan → cegah mass-assignment.
+router.patch('/profile', requireTeacher, async (req, res) => {
+  const teacherId = req.user.teacher_id;
+  const userId = req.user.user_id;
+
+  const { email, phone_number, address, photo_profile } = req.body;
+
+  // NOTE: sengaja hanya trim(), TANPA lowercase — sistem ini case-sensitive untuk
+  // email (admin login pakai COLLATE "C", lihat auth.js). Jangan diubah jadi lowercase.
+  const emailProvided = email !== undefined;
+  let normalizedEmail;
+  if (emailProvided) {
+    normalizedEmail = typeof email === 'string' ? email.trim() : '';
+    if (!normalizedEmail || normalizedEmail.length > 100 || !EMAIL_REGEX.test(normalizedEmail)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Format email tidak valid'
+      });
+    }
+  }
+
+  // Validasi tipe & panjang field kontak di boundary (cegah error DB bocor jadi 500).
+  if (invalidNullableString(phone_number, 20)) {
+    return res.status(400).json({ success: false, message: 'Nomor telepon harus berupa teks maksimal 20 karakter' });
+  }
+  if (invalidNullableString(address, 1000)) {
+    return res.status(400).json({ success: false, message: 'Alamat harus berupa teks maksimal 1000 karakter' });
+  }
+  if (invalidNullableString(photo_profile, 255)) {
+    return res.status(400).json({ success: false, message: 'Foto profil harus berupa teks maksimal 255 karakter' });
+  }
+
+  const teacherSets = [];
+  const teacherParams = [];
+  let idx = 1;
+  if (phone_number !== undefined) { teacherSets.push(`phone_number = $${idx++}`); teacherParams.push(phone_number); }
+  if (address !== undefined)      { teacherSets.push(`address = $${idx++}`);      teacherParams.push(address); }
+  if (photo_profile !== undefined){ teacherSets.push(`photo_profile = $${idx++}`);teacherParams.push(photo_profile); }
+
+  if (teacherSets.length === 0 && !emailProvided) {
+    return res.status(400).json({
+      success: false,
+      message: 'Tidak ada field yang diubah'
+    });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    if (emailProvided) {
+      const checkEmail = await client.query(
+        'SELECT id FROM users WHERE email = $1 AND id != $2',
+        [normalizedEmail, userId]
+      );
+      if (checkEmail.rows.length > 0) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          success: false,
+          message: 'Email sudah digunakan akun lain'
+        });
+      }
+      // email_verified_at direset NULL: email baru belum terverifikasi.
+      await client.query(
+        'UPDATE users SET email = $1, email_verified_at = NULL, updated_at = NOW() WHERE id = $2',
+        [normalizedEmail, userId]
+      );
+    }
+
+    if (teacherSets.length > 0) {
+      teacherParams.push(teacherId);
+      await client.query(
+        `UPDATE teachers SET ${teacherSets.join(', ')}, updated_at = NOW() WHERE id = $${idx}`,
+        teacherParams
+      );
+    }
+
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    // Race: cek-lalu-update email tidak atomik. Penjaga akhir adalah UNIQUE
+    // constraint DB (unique_violation 23505) → petakan ke 409, bukan 500.
+    if (error.code === '23505') {
+      return res.status(409).json({
+        success: false,
+        message: 'Email sudah digunakan akun lain'
+      });
+    }
+    console.error('Error updating teacher self-profile:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Terjadi kesalahan saat memperbarui profil',
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
+    });
+  } finally {
+    client.release();
+  }
+
+  try {
+    const data = await fetchTeacherProfile(teacherId);
+    return res.json({
+      success: true,
+      message: 'Profil berhasil diperbarui',
+      data
+    });
+  } catch (error) {
+    console.error('Error fetching teacher profile after update:', error);
+    return res.json({
+      success: true,
+      message: 'Profil berhasil diperbarui'
+    });
+  }
+});
 
 // GET all teachers
 router.get('/', requireAdmin, async (req, res) => {

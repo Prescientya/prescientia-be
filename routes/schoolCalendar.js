@@ -12,7 +12,7 @@ router.get('/', readLimiter, async (req, res) => {
     const offset = (page - 1) * limit;
 
     let query = `
-      SELECT id, date, year, month, day, status, created_at, updated_at
+      SELECT id, DATE_FORMAT(date, '%Y-%m-%d') AS date, year, month, day, status, created_at, updated_at
       FROM school_calendar
       WHERE 1=1
     `;
@@ -80,7 +80,7 @@ router.get('/by-date/:dateStr', readLimiter, async (req, res) => {
     const { dateStr } = req.params;
 
     const result = await pool.query(
-      'SELECT id, date, year, month, day, status, created_at, updated_at FROM school_calendar WHERE date = $1',
+      "SELECT id, DATE_FORMAT(date, '%Y-%m-%d') AS date, year, month, day, status, created_at, updated_at FROM school_calendar WHERE date = $1",
       [dateStr]
     );
 
