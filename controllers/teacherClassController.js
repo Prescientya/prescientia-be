@@ -291,8 +291,8 @@ const getClassStudents = async (req, res) => {
         sa.id AS attendance_id,
         COALESCE(ascp.new_status, sa.status) AS attendance_status,
         COALESCE(ascp.changed_by_type, sa.source) AS attendance_source,
-        sa.check_in_time,
-        sa.check_out_time,
+        DATE_FORMAT(CONVERT_TZ(sa.check_in_time, '+00:00', '+07:00'), '%Y-%m-%d %H:%i:%s') AS check_in_time,
+        DATE_FORMAT(CONVERT_TZ(sa.check_out_time, '+00:00', '+07:00'), '%Y-%m-%d %H:%i:%s') AS check_out_time,
         sad.description AS attendance_description,
         sad.approval_status
       FROM students s
@@ -439,7 +439,8 @@ const getHomeroomStudents = async (req, res) => {
       SELECT
         s.id AS student_id, s.nis, s.name AS student_name, s.gender, s.photo_profile,
         sa.id AS attendance_id, sa.status AS attendance_status, sa.source AS attendance_source,
-        sa.check_in_time, sa.check_out_time,
+        DATE_FORMAT(CONVERT_TZ(sa.check_in_time, '+00:00', '+07:00'), '%Y-%m-%d %H:%i:%s') AS check_in_time,
+        DATE_FORMAT(CONVERT_TZ(sa.check_out_time, '+00:00', '+07:00'), '%Y-%m-%d %H:%i:%s') AS check_out_time,
         sad.description AS attendance_description, sad.approval_status
       FROM students s
       LEFT JOIN (
@@ -793,7 +794,7 @@ const getPendingAttendances = async (req, res) => {
         s.nis,
         s.name AS student_name,
         s.photo_profile AS student_photo,
-        sc.date::text AS date,
+        DATE_FORMAT(sc.date, '%Y-%m-%d') AS date,
         sad.status,
         sad.description AS reason,
         sad.evidence_url,
@@ -803,23 +804,30 @@ const getPendingAttendances = async (req, res) => {
       INNER JOIN student_attendances sa ON sa.id = sad.attendance_id
       INNER JOIN students s ON s.id = sa.student_id
       LEFT JOIN school_calendar sc ON sc.id = sa.calendar_id
-      LEFT JOIN LATERAL (
-        SELECT asc2.class_period_id
+      LEFT JOIN (
+        SELECT
+          asc2.attendance_id,
+          asc2.class_period_id,
+          ROW_NUMBER() OVER (
+            PARTITION BY asc2.attendance_id
+            ORDER BY asc2.created_at DESC
+          ) AS rn
         FROM attendance_status_changes asc2
-        WHERE asc2.attendance_id = sa.id
-          AND asc2.class_period_id IS NOT NULL
-        ORDER BY asc2.created_at DESC
-        LIMIT 1
-      ) lc ON TRUE
+        WHERE asc2.class_period_id IS NOT NULL
+      ) lc ON lc.attendance_id = sa.id AND lc.rn = 1
       LEFT JOIN class_periods cp ON cp.id = lc.class_period_id
-      LEFT JOIN LATERAL (
-        SELECT ts1.id AS schedule_id, ts1.subject_id
+      LEFT JOIN (
+        SELECT
+          ts1.class_id,
+          ts1.class_period_id,
+          ts1.id AS schedule_id,
+          ts1.subject_id,
+          ROW_NUMBER() OVER (
+            PARTITION BY ts1.class_id, ts1.class_period_id
+            ORDER BY ts1.id ASC
+          ) AS rn
         FROM teacher_schedules ts1
-        WHERE ts1.class_id = sa.class_id
-          AND ts1.class_period_id = lc.class_period_id
-        ORDER BY ts1.id ASC
-        LIMIT 1
-      ) scd ON TRUE
+      ) scd ON scd.class_id = sa.class_id AND scd.class_period_id = lc.class_period_id AND scd.rn = 1
       WHERE sa.class_id = $1
         AND sad.approval_status = 'pending'
       ORDER BY sad.created_at DESC
@@ -1162,16 +1170,20 @@ const getHomeroomPeriodMonitor = async (req, res) => {
           sa.id AS attendance_id,
           sa.status AS base_status
         FROM class_students cs
-        LEFT JOIN LATERAL (
-          SELECT sa2.id, sa2.status
+        LEFT JOIN (
+          SELECT
+            sa2.student_id,
+            sa2.id,
+            sa2.status,
+            ROW_NUMBER() OVER (
+              PARTITION BY sa2.student_id
+              ORDER BY (sa2.updated_at IS NULL), sa2.updated_at DESC, sa2.id DESC
+            ) AS rn
           FROM student_attendances sa2
           INNER JOIN school_calendar sc2 ON sc2.id = sa2.calendar_id
-          WHERE sa2.student_id = cs.student_id
-            AND sa2.class_id = $1
+          WHERE sa2.class_id = $1
             AND sc2.date = $2::date
-          ORDER BY sa2.updated_at DESC NULLS LAST, sa2.id DESC
-          LIMIT 1
-        ) sa ON TRUE
+        ) sa ON sa.student_id = cs.student_id AND sa.rn = 1
       ),
       effective_statuses AS (
         SELECT

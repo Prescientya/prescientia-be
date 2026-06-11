@@ -368,11 +368,14 @@ router.patch('/approve/wali/:id', requireTeacher, async (req, res) => {
         // Update student_attendance_summary counters
         const summaryCol = approved.reason === 'sakit' ? 'total_sakit' : 'total_izin';
         await pool.query(
+          // MariaDB upsert (shim pgToMySQL tidak menerjemahkan ON CONFLICT PostgreSQL).
+          // Prasyarat: UNIQUE index pada student_attendance_summary.student_id.
+          // ${summaryCol} berasal dari enum hardcoded ('total_sakit'|'total_izin'), bukan input user.
           `INSERT INTO student_attendance_summary (student_id, ${summaryCol}, created_at, updated_at)
            VALUES ($1, 1, NOW(), NOW())
-           ON CONFLICT (student_id) DO UPDATE
-           SET ${summaryCol} = student_attendance_summary.${summaryCol} + 1,
-               updated_at = NOW()`,
+           ON DUPLICATE KEY UPDATE
+             ${summaryCol} = ${summaryCol} + 1,
+             updated_at = NOW()`,
           [approved.student_id]
         );
       }
@@ -548,11 +551,14 @@ router.patch('/approve/admin/:id', requireAdmin, async (req, res) => {
         // Update student_attendance_summary counters
         const summaryCol = approved.reason === 'sakit' ? 'total_sakit' : 'total_izin';
         await pool.query(
+          // MariaDB upsert (shim pgToMySQL tidak menerjemahkan ON CONFLICT PostgreSQL).
+          // Prasyarat: UNIQUE index pada student_attendance_summary.student_id.
+          // ${summaryCol} berasal dari enum hardcoded ('total_sakit'|'total_izin'), bukan input user.
           `INSERT INTO student_attendance_summary (student_id, ${summaryCol}, created_at, updated_at)
            VALUES ($1, 1, NOW(), NOW())
-           ON CONFLICT (student_id) DO UPDATE
-           SET ${summaryCol} = student_attendance_summary.${summaryCol} + 1,
-               updated_at = NOW()`,
+           ON DUPLICATE KEY UPDATE
+             ${summaryCol} = ${summaryCol} + 1,
+             updated_at = NOW()`,
           [approved.student_id]
         );
       } else if (approved.user_type === 'teacher' && approved.teacher_id) {

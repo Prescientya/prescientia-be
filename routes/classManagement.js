@@ -1,7 +1,7 @@
 ﻿const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
-const { requireStudent } = require('../middlewares/auth.middleware');
+const { requireStudent, requireKM } = require('../middlewares/auth.middleware');
 
 // ==================== CLASS MANAGEMENT ATTENDANCE ====================
 // Endpoints untuk petugas absensi kelas (KM, Wakil KM, Sekertaris)
@@ -182,15 +182,22 @@ router.get('/attendance/today', requireStudent, async (req, res) => {
 
 // POST - Batch Submit Status Kehadiran (Create)
 // POST /api/class-management/attendance/batch-submit
-router.post('/attendance/batch-submit', requireStudent, async (req, res) => {
+router.post('/attendance/batch-submit', requireStudent, requireKM, async (req, res) => {
   const client = await pool.connect();
-  
+
   try {
-    let { class_id, date, updated_by, attendances } = req.body;
-    
-    // Ambil class_id dari token siswa jika tidak ada di body
-    if (!class_id && req.user && req.user.class_id) {
-      class_id = req.user.class_id;
+    let { date, updated_by, attendances } = req.body;
+
+    // SECURITY: class_id WAJIB diambil dari token KM, bukan dari body — mencegah
+    // IDOR lintas kelas (KM kelas A mengubah absensi kelas B). Tolak jika body
+    // mengirim class_id yang berbeda dari kelas KM yang login.
+    const class_id = req.user && req.user.class_id;
+    if (req.body.class_id != null && Number(req.body.class_id) !== Number(class_id)) {
+      client.release();
+      return res.status(403).json({
+        success: false,
+        message: 'Tidak berhak mengubah absensi kelas lain.'
+      });
     }
     
     // Gunakan tanggal hari ini jika tidak ada di body
@@ -410,15 +417,22 @@ router.post('/attendance/batch-submit', requireStudent, async (req, res) => {
 
 // PATCH - Batch Update Status Kehadiran (Update)
 // PATCH /api/class-management/attendance/batch-update
-router.patch('/attendance/batch-update', requireStudent, async (req, res) => {
+router.patch('/attendance/batch-update', requireStudent, requireKM, async (req, res) => {
   const client = await pool.connect();
-  
+
   try {
-    let { class_id, date, updated_by, attendances } = req.body;
-    
-    // Ambil class_id dari token siswa jika tidak ada di body
-    if (!class_id && req.user && req.user.class_id) {
-      class_id = req.user.class_id;
+    let { date, updated_by, attendances } = req.body;
+
+    // SECURITY: class_id WAJIB diambil dari token KM, bukan dari body — mencegah
+    // IDOR lintas kelas (KM kelas A mengubah absensi kelas B). Tolak jika body
+    // mengirim class_id yang berbeda dari kelas KM yang login.
+    const class_id = req.user && req.user.class_id;
+    if (req.body.class_id != null && Number(req.body.class_id) !== Number(class_id)) {
+      client.release();
+      return res.status(403).json({
+        success: false,
+        message: 'Tidak berhak mengubah absensi kelas lain.'
+      });
     }
     
     // Gunakan tanggal hari ini jika tidak ada di body
