@@ -132,17 +132,17 @@ function buildLimiter({ windowMs, max, message, keyGenerator, storePrefix }) {
 }
 
 const authLimiter = buildLimiter({
-  windowMs: 15 * 60 * 1000,
+  windowMs: 10 * 1000, // rate limited
   max: 10,
-  message: 'Terlalu banyak percobaan login. Coba lagi dalam 15 menit.',
+  message: 'Terlalu banyak percobaan login. Coba lagi dalam 15 detik.',
   keyGenerator: getClientIp,
   storePrefix: 'auth'
 });
 
 const attendanceLimiter = buildLimiter({
-  windowMs: 60 * 1000,
-  max: 10,
-  message: 'Terlalu sering mengirim absensi. Coba lagi dalam 1 menit.',
+  windowMs: 40 * 1000,
+  max: 50,
+  message: 'Terlalu sering mengirim absensi. Coba lagi dalam 40 detik.',
   keyGenerator: keyByUserOrIp,
   storePrefix: 'attendance'
 });
