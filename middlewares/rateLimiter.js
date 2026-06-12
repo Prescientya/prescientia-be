@@ -133,7 +133,7 @@ function buildLimiter({ windowMs, max, message, keyGenerator, storePrefix }) {
 
 const authLimiter = buildLimiter({
   windowMs: 10 * 1000, // rate limited
-  max: 10,
+  max: 100,
   message: 'Terlalu banyak percobaan login. Coba lagi dalam 15 detik.',
   keyGenerator: getClientIp,
   storePrefix: 'auth'
