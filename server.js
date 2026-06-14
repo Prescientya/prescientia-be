@@ -118,8 +118,18 @@ const routes = [
   { path: '/api/absence-letters', handler: absenceLettersRoutes }
 ];
 
-// Register all routes dynamically with readLimiter (60 req/min per user)
+// Register all routes dynamically with readLimiter (per-user via JWT key).
+//
+// SCALE: `/api/auth` SENGAJA dikecualikan dari readLimiter. Saat login belum ada
+// token → kunci readLimiter jatuh ke per-IP; di sekolah ber-NAT (satu IP publik)
+// itu menyatukan seluruh sekolah ke satu ember dan memblokir rush login pagi.
+// Proteksi /api/auth sudah ditangani per-rute oleh accountLimiter (per-akun) +
+// authLimiter (jaring per-IP, failures-only) di routes/auth.js.
 routes.forEach(route => {
+  if (route.path === '/api/auth') {
+    app.use(route.path, route.handler);
+    return;
+  }
   app.use(route.path, readLimiter, route.handler);
 });
 

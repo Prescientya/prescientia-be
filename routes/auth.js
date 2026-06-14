@@ -4,7 +4,17 @@ const crypto = require('crypto');
 const pool = require('../config/database');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const { authLimiter } = require('../middlewares/rateLimiter');
+const { authLimiter, accountLimiter } = require('../middlewares/rateLimiter');
+
+// Limiter brute-force per-akun — dibuat sekali di module load (bukan per-request)
+// agar instance & ember Redis-nya stabil. Dipasang SEBELUM authLimiter pada
+// rute yang memverifikasi kredensial. Field = identifier yang dikirim di body.
+const siswaCheckAccountLimiter = accountLimiter('nis', 'siswa');     // POST /user/siswa
+const guruCheckAccountLimiter = accountLimiter('nip', 'guru');       // POST /user/guru
+const siswaLoginAccountLimiter = accountLimiter('nisn', 'siswa');    // POST /login/siswa
+const guruLoginAccountLimiter = accountLimiter('nip', 'guru');       // POST /login/guru
+const petugasLoginAccountLimiter = accountLimiter('username', 'petugas'); // POST /login/petugas
+const adminLoginAccountLimiter = accountLimiter('email', 'admin');   // POST /login/admin
 const { revokeToken, invalidateUserTokensBefore, checkTokenState } = require('../utils/tokenBlacklist');
 
 // Pesan login seragam (mitigasi username enumeration). SEMUA kegagalan
@@ -19,7 +29,7 @@ const LOGIN_INVALID = {
 
 // GET user by NIS (student) and password - returns user+student info (no password)
 // Changed to POST to avoid password in URL query parameters
-router.post('/user/siswa', authLimiter, async (req, res) => {
+router.post('/user/siswa', siswaCheckAccountLimiter, authLimiter, async (req, res) => {
   const { nis, password } = req.body;
   try {
     if (!nis || !password) {
@@ -63,7 +73,7 @@ router.post('/user/siswa', authLimiter, async (req, res) => {
 
 // GET user by NIP (teacher) and password - returns user+teacher info (no password)
 // Changed to POST to avoid password in URL query parameters
-router.post('/user/guru', authLimiter, async (req, res) => {
+router.post('/user/guru', guruCheckAccountLimiter, authLimiter, async (req, res) => {
   const { nip, password } = req.body;
   try {
     if (!nip || !password) {
@@ -613,7 +623,7 @@ router.get('/validate-token', async (req, res) => {
 // ==================== LOGIN ENDPOINTS ====================
 
 // Login endpoint untuk Siswa (Student)
-router.post('/login/siswa', authLimiter, async (req, res) => {
+router.post('/login/siswa', siswaLoginAccountLimiter, authLimiter, async (req, res) => {
   const { nisn, password, device_id } = req.body;
 
   try {
@@ -733,7 +743,7 @@ router.post('/login/siswa', authLimiter, async (req, res) => {
 });
 
 // Login endpoint untuk Guru (Teacher)
-router.post('/login/guru', authLimiter, async (req, res) => {
+router.post('/login/guru', guruLoginAccountLimiter, authLimiter, async (req, res) => {
   const { nip, password, device_id } = req.body;
 
   try {
@@ -917,7 +927,7 @@ router.post('/login/guru', authLimiter, async (req, res) => {
 });
 
 // Login endpoint untuk Petugas MBG
-router.post('/login/petugas', authLimiter, async (req, res) => {
+router.post('/login/petugas', petugasLoginAccountLimiter, authLimiter, async (req, res) => {
   const { username, password } = req.body;
 
   try {
@@ -976,7 +986,7 @@ router.post('/login/petugas', authLimiter, async (req, res) => {
 });
 
 // Login endpoint untuk Admin
-router.post('/login/admin', authLimiter, async (req, res) => {
+router.post('/login/admin', adminLoginAccountLimiter, authLimiter, async (req, res) => {
   const { email, password, device_id } = req.body;
 
   try {
