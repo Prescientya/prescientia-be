@@ -1,4 +1,4 @@
-﻿const express = require('express');
+const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const { requireStudent, requireKM } = require('../middlewares/auth.middleware');
@@ -282,12 +282,12 @@ router.post('/attendance/batch-submit', requireStudent, requireKM, async (req, r
       try {
         const { student_id, status, notes } = attendance;
 
-        // Validasi status
-        if (!['sakit', 'izin', 'alpa'].includes(status)) {
+        // Validasi status — hadir/sakit/izin/alpa semua valid
+        if (!['hadir', 'sakit', 'izin', 'alpa'].includes(status)) {
           details.push({
             student_id: student_id,
             success: false,
-            error: `Status tidak valid: ${status} (harus sakit, izin, atau alpa)`
+            error: `Status tidak valid: ${status} (harus hadir, sakit, izin, atau alpa)`
           });
           failedCount++;
           continue;
@@ -317,9 +317,9 @@ router.post('/attendance/batch-submit', requireStudent, requireKM, async (req, r
         
         // Insert attendance record
         // Untuk sakit/izin: simpan sebagai 'alpa' dulu, buat detail pending untuk konfirmasi wali kelas
-        // Untuk alpa: langsung simpan sebagai 'alpa'
-        const savedStatus = (status === 'sakit' || status === 'izin') ? 'alpa' : status;
+        // Untuk hadir/alpa: langsung simpan status final
         const needsApproval = (status === 'sakit' || status === 'izin');
+        const savedStatus = needsApproval ? 'alpa' : status;
         
         const insertQuery = `
           INSERT INTO student_attendances 
@@ -349,7 +349,7 @@ router.post('/attendance/batch-submit', requireStudent, requireKM, async (req, r
             [attendance_id, status, notes || `Dilaporkan oleh petugas kelas`]
           );
         } else if (notes) {
-          // Jika alpa dan ada notes, insert detail tanpa perlu approval
+          // Jika hadir/alpa dan ada notes, insert detail tanpa perlu approval
           await client.query(
             `INSERT INTO student_attendance_details 
              (attendance_id, status, description, approval_status, created_at, updated_at) 

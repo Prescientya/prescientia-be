@@ -142,17 +142,25 @@ function requireStudent(req, res, next) {
 // requireKM middleware
 // - MUST run after requireStudent
 // - does NOT re-verify the token; it uses req.user populated by requireStudent
+// - Izinkan: KM (km), Wakil KM (wakil_km), Sekretaris (sekretaris)
+// - CATATAN: database menyimpan role dalam lowercase (km, wakil_km, sekretaris)
 function requireKM(req, res, next) {
   try {
     if (!req.user) {
       return res.status(401).json({ success: false, message: 'Unauthorized: middleware requireStudent harus dijalankan terlebih dahulu.' });
     }
 
-    // Fix: sebelumnya cek `student_role` saja, padahal requireStudent menyetel
-    // role pada `req.user.role`. Sekarang cek keduanya (case-insensitive).
-    const studentRole = (req.user.role || req.user.student_role || '').toString().toUpperCase();
-    if (studentRole !== 'KM') {
-      return res.status(403).json({ success: false, message: 'Akses terlarang: dibutuhkan peran KM.' });
+    // Normalisasi ke lowercase untuk mencocokkan nilai di database
+    const studentRole = (req.user.role || req.user.student_role || '').toString().toLowerCase().trim();
+
+    // Izinkan semua petugas kelas: KM, Wakil KM, dan Sekretaris
+    // Nilai di DB: 'km', 'wakil_km', 'sekretaris'
+    const allowedRoles = ['km', 'wakil_km', 'sekretaris'];
+    if (!allowedRoles.includes(studentRole)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Akses terlarang: dibutuhkan peran KM, Wakil KM, atau Sekretaris.'
+      });
     }
 
     return next();

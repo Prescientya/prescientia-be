@@ -1,4 +1,4 @@
-﻿const express = require('express');
+const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const bcrypt = require('bcrypt');
@@ -266,7 +266,8 @@ router.patch('/profile', requireStudent, async (req, res) => {
   const userId = req.user.user_id;
 
   // Whitelist eksplisit. Field di luar ini diabaikan total.
-  const { email, phone_number, address, photo_profile } = req.body;
+  // UPDATE: Membuka akses agar siswa bisa mengubah gender dan date_of_birth mandiri
+  const { email, phone_number, address, photo_profile, gender, date_of_birth } = req.body;
 
   // Validasi email (bila dikirim): whitelist bentuk, bukan blacklist.
   // NOTE: sengaja hanya trim(), TANPA lowercase — sistem ini case-sensitive untuk
@@ -293,15 +294,31 @@ router.patch('/profile', requireStudent, async (req, res) => {
   if (invalidNullableString(photo_profile, 255)) {
     return res.status(400).json({ success: false, message: 'Foto profil harus berupa teks maksimal 255 karakter' });
   }
+  
+  // Validasi gender
+  if (gender !== undefined && gender !== null) {
+    if (gender !== 'L' && gender !== 'P') {
+      return res.status(400).json({ success: false, message: 'Jenis kelamin tidak valid (harus L atau P)' });
+    }
+  }
+
+  // Validasi date_of_birth (YYYY-MM-DD)
+  if (date_of_birth !== undefined && date_of_birth !== null) {
+    if (isNaN(Date.parse(date_of_birth))) {
+      return res.status(400).json({ success: false, message: 'Format tanggal lahir tidak valid' });
+    }
+  }
 
   // Bangun update dinamis untuk kolom kontak di tabel students.
-  // phone_number/address/photo_profile pakai cek !== undefined agar bisa dikosongkan (null).
+  // phone_number/address/photo_profile/gender/date_of_birth pakai cek !== undefined agar bisa dikosongkan/null bila diizinkan.
   const studentSets = [];
   const studentParams = [];
   let idx = 1;
   if (phone_number !== undefined) { studentSets.push(`phone_number = $${idx++}`); studentParams.push(phone_number); }
   if (address !== undefined)      { studentSets.push(`address = $${idx++}`);      studentParams.push(address); }
   if (photo_profile !== undefined){ studentSets.push(`photo_profile = $${idx++}`);studentParams.push(photo_profile); }
+  if (gender !== undefined)       { studentSets.push(`gender = $${idx++}`);       studentParams.push(gender); }
+  if (date_of_birth !== undefined){ studentSets.push(`date_of_birth = $${idx++}`);studentParams.push(date_of_birth); }
 
   if (studentSets.length === 0 && !emailProvided) {
     return res.status(400).json({
